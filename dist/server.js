@@ -1,4 +1,4 @@
-import app, { setReady } from "./app.js";
+import app from "./app.js";
 import { env } from "./config/env.js";
 import { runMigrations } from "./db/migrate.js";
 import { pool } from "./db/pool.js";
@@ -8,11 +8,8 @@ async function startup() {
     console.log("Database connection established");
     // Run migrations
     await runMigrations();
-    // Mark service ready
-    setReady();
-    console.log("Service is ready");
     // Start HTTP server only after everything is ready
-    app.listen(env.PORT, () => {
+    app.listen(env.PORT, "0.0.0.0", () => {
         console.log(`Server listening on port ${env.PORT}`);
     });
 }

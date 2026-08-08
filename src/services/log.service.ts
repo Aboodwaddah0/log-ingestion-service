@@ -1,77 +1,31 @@
-import { type InsertLog, insertLogs } from "../repositories/log.repository.js";
-import { logSchema } from "../validators/log.schema.js";
+import {
+  type InsertLog,
+  type LogQuery,
+  insertLogs,
+  getLogs,
+} from "../repositories/log.repository.js";
+import { validateLog } from "../validators/log.schema.js";
 
+export async function ingestLogs(raw: unknown[]) {
+  const accepted: InsertLog[] = [];
+  const rejected: Array<{ index: number; reason: string }> = [];
 
-const BATCH_SIZE = 5000;
-
-
-export async function ingestLogs(logs: unknown[]) {
-
-    let acceptedCount = 0;
-
-    const rejected: Array<{
-        index: number;
-        reason: string;
-        log: unknown;
-    }> = [];
-
-
-    let batch: InsertLog[] = [];
-
-
-    for (const [index, item] of logs.entries()) {
-
-
-        const result = logSchema.safeParse(item);
-
-
-        if (result.success) {
-
-
-            batch.push(result.data);
-
-            acceptedCount++;
-
-
-            if (batch.length >= BATCH_SIZE) {
-
-
-                await insertLogs(batch);
-
-
-                batch = [];
-
-            }
-
-
-        } else {
-
-
-            rejected.push({
-                index,
-                reason:
-                    result.error.issues[0]?.message
-                    ?? "Invalid log",
-                log: item
-            });
-
-
-        }
-
+  for (let i = 0; i < raw.length; i++) {
+    const result = validateLog(raw[i]);
+    if (result.ok) {
+      accepted.push(result.data);
+    } else {
+      rejected.push({ index: i, reason: result.reason });
     }
+  }
 
+  if (accepted.length > 0) {
+    await insertLogs(accepted);
+  }
 
-    // إدخال آخر batch إذا بقي شيء
-    if (batch.length > 0) {
+  return { accepted: accepted.length, rejected };
+}
 
-        await insertLogs(batch);
-
-    }
-
-
-    return {
-        accepted: acceptedCount,
-        rejected
-    };
-
+export async function queryLogs(params: LogQuery) {
+  return getLogs(params);
 }

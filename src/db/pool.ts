@@ -7,19 +7,7 @@ export const pool = new Pool({
     user: env.POSTGRES_USER,
     password: env.POSTGRES_PASSWORD,
     database: env.POSTGRES_DB,
-
-    max: 10,
-
-    idleTimeoutMillis: 30000,
-
-    connectionTimeoutMillis: 10000,
+    max: 20,
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 10_000,
 });
-
-
-setInterval(() => {
-    console.log({
-        total: pool.totalCount,
-        idle: pool.idleCount,
-        waiting: pool.waitingCount
-    });
-}, 3000);

@@ -10,4 +10,5 @@ COPY . .
 
 EXPOSE 8080
 
-CMD ["npm","run","dev"]
+RUN npm run build && cp -r src/db/migrations dist/db/
+CMD ["npm","run","start"]

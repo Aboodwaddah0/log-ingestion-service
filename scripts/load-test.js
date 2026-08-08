@@ -1,7 +1,7 @@
 import fetch from "node-fetch";
 import http from "http";
 
-const URL = "http://127.0.0.1:8080/logs";
+const URL = `http://127.0.0.1:${process.env.PORT ?? 4000}/logs`;
 
 const TOTAL_LOGS = 200000;
 const BATCH_SIZE = 5000;

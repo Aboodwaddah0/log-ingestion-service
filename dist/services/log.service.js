@@ -1,0 +1,22 @@
+import { insertLogs, getLogs, } from "../repositories/log.repository.js";
+import { validateLog } from "../validators/log.schema.js";
+export async function ingestLogs(raw) {
+    const accepted = [];
+    const rejected = [];
+    for (let i = 0; i < raw.length; i++) {
+        const result = validateLog(raw[i]);
+        if (result.ok) {
+            accepted.push(result.data);
+        }
+        else {
+            rejected.push({ index: i, reason: result.reason });
+        }
+    }
+    if (accepted.length > 0) {
+        await insertLogs(accepted);
+    }
+    return { accepted: accepted.length, rejected };
+}
+export async function queryLogs(params) {
+    return getLogs(params);
+}
