@@ -117,7 +117,11 @@ export async function getLogs(params: LogQuery) {
   }
 
   if (params.cursor) {
-    const [ts, id] = params.cursor.split(",");
+    const parts = params.cursor.split(",");
+    const [ts, id] = parts;
+    if (parts.length !== 2 || !ts || !id || isNaN(new Date(ts).getTime()) || !/^\d+$/.test(id)) {
+      throw new AppError(400, "invalid or malformed cursor");
+    }
     conditions.push(
       `(timestamp, id) < (${push(ts)}::timestamptz, ${push(id)}::bigint)`
     );

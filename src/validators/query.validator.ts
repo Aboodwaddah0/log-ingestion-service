@@ -22,28 +22,6 @@ export function validateLogQuery(query: Record<string, unknown>): LogQuery {
     throw new AppError(400, "until must be after since");
   }
 
-  if (cursor !== undefined) {
-  const parts = String(cursor).split(",");
-
-  if (parts.length !== 2) {
-    throw new AppError(400, "invalid cursor");
-  }
-
-  const [ts, id] = parts;
-
-  if (!ts || !id) {
-    throw new AppError(400, "invalid cursor");
-  }
-
-  if (isNaN(new Date(ts).getTime())) {
-    throw new AppError(400, "invalid cursor timestamp");
-  }
-
-  if (!/^\d+$/.test(id)) {
-    throw new AppError(400, "invalid cursor id");
-  }
-}
-
   let limit = 100;
   if (limitRaw !== undefined) {
     const n = Number(limitRaw);

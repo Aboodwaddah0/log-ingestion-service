@@ -1,4 +1,4 @@
-import { insertLogs, getLogs, } from "../repositories/log.repository.js";
+import { aggregateLogs, insertLogs, getLogs, } from "../repositories/log.repository.js";
 import { validateLog } from "../validators/log.schema.js";
 export async function ingestLogs(raw) {
     const accepted = [];
@@ -19,4 +19,7 @@ export async function ingestLogs(raw) {
 }
 export async function queryLogs(params) {
     return getLogs(params);
+}
+export async function queryAggregate(params) {
+    return aggregateLogs(params);
 }

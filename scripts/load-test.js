@@ -59,7 +59,7 @@ async function runOnce(run) {
 
   const start = Date.now();
   await Promise.all(Array.from({ length: CONCURRENCY }, worker));
-  const seconds = (Date.now() - start) / 1000;
+  const seconds    = (Date.now() - start) / 1000;
   const throughput = sent / seconds;
 
   console.log(`  Run ${run}: ${seconds.toFixed(3)}s  →  ${throughput.toFixed(0)} logs/sec`);

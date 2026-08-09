@@ -40,3 +40,43 @@ export function validateLogQuery(query) {
         attrs: Object.keys(attrs).length > 0 ? attrs : undefined,
     };
 }
+const VALID_BUCKETS = new Set(["1m", "5m", "1h", "1d"]);
+const VALID_GROUP_BY = new Set(["service", "level"]);
+export function validateAggregateQuery(query) {
+    const { since, until, bucket, group_by, service, level, q } = query;
+    if (since === undefined)
+        throw new AppError(400, "since is required");
+    if (isNaN(new Date(String(since)).getTime()))
+        throw new AppError(400, "invalid since timestamp");
+    if (until === undefined)
+        throw new AppError(400, "until is required");
+    if (isNaN(new Date(String(until)).getTime()))
+        throw new AppError(400, "invalid until timestamp");
+    if (new Date(String(since)) >= new Date(String(until)))
+        throw new AppError(400, "until must be after since");
+    if (bucket === undefined)
+        throw new AppError(400, "bucket is required");
+    if (!VALID_BUCKETS.has(String(bucket)))
+        throw new AppError(400, `invalid bucket: '${bucket}', must be one of 1m, 5m, 1h, 1d`);
+    if (group_by !== undefined && !VALID_GROUP_BY.has(String(group_by))) {
+        throw new AppError(400, `invalid group_by: '${group_by}', must be service or level`);
+    }
+    if (level !== undefined && !VALID_LEVELS.has(String(level))) {
+        throw new AppError(400, `invalid level: '${level}'`);
+    }
+    const attrs = {};
+    for (const [key, val] of Object.entries(query)) {
+        if (key.startsWith("attr."))
+            attrs[key.slice(5)] = String(val);
+    }
+    return {
+        since: String(since),
+        until: String(until),
+        bucket: String(bucket),
+        group_by: group_by !== undefined ? String(group_by) : undefined,
+        service: service !== undefined ? String(service) : undefined,
+        level: level !== undefined ? String(level) : undefined,
+        q: q !== undefined ? String(q) : undefined,
+        attrs: Object.keys(attrs).length > 0 ? attrs : undefined,
+    };
+}
