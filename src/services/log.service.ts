@@ -1,6 +1,8 @@
 import {
+  type AggregateQuery,
   type InsertLog,
   type LogQuery,
+  aggregateLogs,
   insertLogs,
   getLogs,
 } from "../repositories/log.repository.js";
@@ -28,4 +30,8 @@ export async function ingestLogs(raw: unknown[]) {
 
 export async function queryLogs(params: LogQuery) {
   return getLogs(params);
+}
+
+export async function queryAggregate(params: AggregateQuery) {
+  return aggregateLogs(params);
 }
