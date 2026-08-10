@@ -1,7 +1,10 @@
 import { AppError } from "../errors/AppError.js";
 import type { AggregateQuery, LogQuery } from "../repositories/log.repository.js";
 
-const VALID_LEVELS = new Set(["debug", "info", "warn", "error"]);
+const VALID_LEVELS   = new Set(["debug", "info", "warn", "error"]);
+
+const str = (v: unknown): string | undefined =>
+  v !== undefined ? String(v) : undefined;
 
 export function validateLogQuery(query: Record<string, unknown>): LogQuery {
   const { service, level, since, until, q, limit: limitRaw, cursor } = query;
@@ -30,24 +33,20 @@ export function validateLogQuery(query: Record<string, unknown>): LogQuery {
     limit = n;
   }
 
-  
-
   const attrs: Record<string, string> = {};
   for (const [key, val] of Object.entries(query)) {
-    if (key.startsWith("attr.")) {
-      attrs[key.slice(5)] = String(val);
-    }
+    if (key.startsWith("attr.")) attrs[key.slice(5)] = String(val);
   }
 
   return {
-    service: service !== undefined ? String(service) : undefined,
-    level: level !== undefined ? (String(level) as LogQuery["level"]) : undefined,
-    since: since !== undefined ? String(since) : undefined,
-    until: until !== undefined ? String(until) : undefined,
-    q: q !== undefined ? String(q) : undefined,
+    service: str(service),
+    level:   str(level) as LogQuery["level"] | undefined,
+    since:   str(since),
+    until:   str(until),
+    q:       str(q),
     limit,
-    cursor: cursor !== undefined ? String(cursor) : undefined,
-    attrs: Object.keys(attrs).length > 0 ? attrs : undefined,
+    cursor:  str(cursor),
+    attrs:   Object.keys(attrs).length > 0 ? attrs : undefined,
   };
 }
 
@@ -85,10 +84,10 @@ export function validateAggregateQuery(query: Record<string, unknown>): Aggregat
     since:    String(since),
     until:    String(until),
     bucket:   String(bucket) as AggregateQuery["bucket"],
-    group_by: group_by !== undefined ? String(group_by) as AggregateQuery["group_by"] : undefined,
-    service:  service !== undefined ? String(service) : undefined,
-    level:    level   !== undefined ? String(level) as AggregateQuery["level"] : undefined,
-    q:        q       !== undefined ? String(q) : undefined,
+    group_by: str(group_by) as AggregateQuery["group_by"] | undefined,
+    service:  str(service),
+    level:    str(level) as AggregateQuery["level"] | undefined,
+    q:        str(q),
     attrs:    Object.keys(attrs).length > 0 ? attrs : undefined,
   };
 }

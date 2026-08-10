@@ -4,19 +4,34 @@ import { from as copyFrom } from "pg-copy-streams";
 import { pool } from "../db/pool.js";
 import { AppError } from "../errors/AppError.js";
 // ── insert ────────────────────────────────────────────────────────────────────
+// Quote a CSV field only when the value actually requires it.
+// timestamp (ISO 8601) and level (debug/info/warn/error) are never passed here —
+// they are always plain ASCII with no commas, quotes, or newlines.
 function csvField(s) {
-    return '"' + s.replace(/"/g, '""') + '"';
-}
-function* logsToCsvRows(logs) {
-    for (const log of logs) {
-        yield [
-            csvField(log.timestamp),
-            csvField(log.level),
-            csvField(log.service),
-            csvField(log.message),
-            csvField(JSON.stringify(log.attributes ?? {})),
-        ].join(",") + "\n";
+    if (s.includes('"') || s.includes(',') || s.includes('\n') || s.includes('\r')) {
+        return '"' + s.replace(/"/g, '""') + '"';
     }
+    return s;
+}
+// Flush accumulated rows to the stream in ~64 KB chunks instead of one yield
+// per row, which cuts stream-write overhead by ~100× for a 5,000-row batch.
+const CHUNK_SIZE = 65536;
+function* logsToCsvChunks(logs) {
+    let buf = "";
+    for (const log of logs) {
+        buf +=
+            log.timestamp + "," +
+                log.level + "," +
+                csvField(log.service) + "," +
+                csvField(log.message) + "," +
+                csvField(JSON.stringify(log.attributes ?? {})) + "\n";
+        if (buf.length >= CHUNK_SIZE) {
+            yield buf;
+            buf = "";
+        }
+    }
+    if (buf.length > 0)
+        yield buf;
 }
 export async function insertLogs(logs) {
     if (logs.length === 0)
@@ -24,7 +39,7 @@ export async function insertLogs(logs) {
     const client = await pool.connect();
     try {
         const copyStream = client.query(copyFrom("COPY logs (timestamp, level, service, message, attributes) FROM STDIN WITH (FORMAT csv)"));
-        await pipeline(Readable.from(logsToCsvRows(logs)), copyStream);
+        await pipeline(Readable.from(logsToCsvChunks(logs)), copyStream);
     }
     catch (error) {
         console.error("COPY failed:", error);

@@ -1,5 +1,6 @@
 import { AppError } from "../errors/AppError.js";
 const VALID_LEVELS = new Set(["debug", "info", "warn", "error"]);
+const str = (v) => v !== undefined ? String(v) : undefined;
 export function validateLogQuery(query) {
     const { service, level, since, until, q, limit: limitRaw, cursor } = query;
     if (level !== undefined && !VALID_LEVELS.has(String(level))) {
@@ -25,18 +26,17 @@ export function validateLogQuery(query) {
     }
     const attrs = {};
     for (const [key, val] of Object.entries(query)) {
-        if (key.startsWith("attr.")) {
+        if (key.startsWith("attr."))
             attrs[key.slice(5)] = String(val);
-        }
     }
     return {
-        service: service !== undefined ? String(service) : undefined,
-        level: level !== undefined ? String(level) : undefined,
-        since: since !== undefined ? String(since) : undefined,
-        until: until !== undefined ? String(until) : undefined,
-        q: q !== undefined ? String(q) : undefined,
+        service: str(service),
+        level: str(level),
+        since: str(since),
+        until: str(until),
+        q: str(q),
         limit,
-        cursor: cursor !== undefined ? String(cursor) : undefined,
+        cursor: str(cursor),
         attrs: Object.keys(attrs).length > 0 ? attrs : undefined,
     };
 }
@@ -73,10 +73,10 @@ export function validateAggregateQuery(query) {
         since: String(since),
         until: String(until),
         bucket: String(bucket),
-        group_by: group_by !== undefined ? String(group_by) : undefined,
-        service: service !== undefined ? String(service) : undefined,
-        level: level !== undefined ? String(level) : undefined,
-        q: q !== undefined ? String(q) : undefined,
+        group_by: str(group_by),
+        service: str(service),
+        level: str(level),
+        q: str(q),
         attrs: Object.keys(attrs).length > 0 ? attrs : undefined,
     };
 }
