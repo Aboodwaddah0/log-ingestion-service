@@ -36,9 +36,7 @@ export interface AggregateQuery {
 
 // ── insert ────────────────────────────────────────────────────────────────────
 
-// Quote a CSV field only when the value actually requires it.
-// timestamp (ISO 8601) and level (debug/info/warn/error) are never passed here —
-// they are always plain ASCII with no commas, quotes, or newlines.
+// timestamp and level are never passed here — plain ASCII, never need quoting.
 function csvField(s: string): string {
   if (s.includes('"') || s.includes(',') || s.includes('\n') || s.includes('\r')) {
     return '"' + s.replace(/"/g, '""') + '"';
@@ -272,5 +270,3 @@ export async function aggregateLogs(params: AggregateQuery) {
     throw new AppError(500, "failed to aggregate logs");
   }
 }
-
-

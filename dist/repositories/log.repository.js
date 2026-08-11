@@ -4,9 +4,7 @@ import { from as copyFrom } from "pg-copy-streams";
 import { pool } from "../db/pool.js";
 import { AppError } from "../errors/AppError.js";
 // ── insert ────────────────────────────────────────────────────────────────────
-// Quote a CSV field only when the value actually requires it.
-// timestamp (ISO 8601) and level (debug/info/warn/error) are never passed here —
-// they are always plain ASCII with no commas, quotes, or newlines.
+// timestamp and level are never passed here — plain ASCII, never need quoting.
 function csvField(s) {
     if (s.includes('"') || s.includes(',') || s.includes('\n') || s.includes('\r')) {
         return '"' + s.replace(/"/g, '""') + '"';
