@@ -17,5 +17,3 @@ CREATE INDEX IF NOT EXISTS idx_logs_timestamp
 CREATE INDEX IF NOT EXISTS idx_logs_service_level_timestamp
   ON logs (service, level, timestamp DESC);
 
-CREATE INDEX IF NOT EXISTS idx_logs_attributes
-  ON logs USING GIN (attributes);
