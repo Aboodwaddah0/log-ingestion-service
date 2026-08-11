@@ -12,6 +12,12 @@ export function errorHandler(
         return;
     }
 
+    // body-parser throws a SyntaxError with a `body` property for malformed JSON
+    if (err instanceof SyntaxError && "body" in err) {
+        res.status(400).json({ error: "invalid JSON" });
+        return;
+    }
+
     console.error(err);
     res.status(500).json({ error: "internal server error" });
 }

@@ -1,5 +1,6 @@
 const VALID_LEVELS = new Set(["debug", "info", "warn", "error"]);
 const FIVE_MINUTES_MS = 5 * 60 * 1000;
+const NINETY_DAYS_MS = 90 * 24 * 60 * 60 * 1000;
 export function validateLog(item) {
     if (!item || typeof item !== "object" || Array.isArray(item)) {
         return { ok: false, reason: "log entry must be an object" };
@@ -14,6 +15,9 @@ export function validateLog(item) {
     }
     if (ts.getTime() > Date.now() + FIVE_MINUTES_MS) {
         return { ok: false, reason: "timestamp too far in the future" };
+    }
+    if (ts.getTime() < Date.now() - NINETY_DAYS_MS) {
+        return { ok: false, reason: "timestamp too far in the past" };
     }
     if (typeof level !== "string" || !VALID_LEVELS.has(level)) {
         return { ok: false, reason: `invalid level: '${String(level)}'` };

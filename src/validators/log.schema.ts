@@ -6,6 +6,7 @@ type ValidationResult =
 
 const VALID_LEVELS = new Set(["debug", "info", "warn", "error"]);
 const FIVE_MINUTES_MS = 5 * 60 * 1000;
+const NINETY_DAYS_MS  = 90 * 24 * 60 * 60 * 1000;
 
 export function validateLog(item: unknown): ValidationResult {
     if (!item || typeof item !== "object" || Array.isArray(item)) {
@@ -24,6 +25,9 @@ export function validateLog(item: unknown): ValidationResult {
     }
     if (ts.getTime() > Date.now() + FIVE_MINUTES_MS) {
         return { ok: false, reason: "timestamp too far in the future" };
+    }
+    if (ts.getTime() < Date.now() - NINETY_DAYS_MS) {
+        return { ok: false, reason: "timestamp too far in the past" };
     }
 
     if (typeof level !== "string" || !VALID_LEVELS.has(level)) {
