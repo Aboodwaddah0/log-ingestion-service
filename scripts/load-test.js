@@ -1,5 +1,10 @@
 import fetch from "node-fetch";
 import http from "http";
+import { config } from "dotenv";
+import { fileURLToPath } from "url";
+import path from "path";
+
+config({ path: path.join(path.dirname(fileURLToPath(import.meta.url)), "..", ".env") });
 
 const URL = `http://127.0.0.1:${process.env.PORT ?? 8080}/logs`;
 
@@ -33,14 +38,29 @@ function generateBatches() {
 }
 
 async function sendBatch(logs) {
-  const res = await fetch(URL, {
-    method:  "POST",
-    agent,
-    headers: { "Content-Type": "application/json" },
-    body:    JSON.stringify({ logs }),
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
-  return res.json();
+  for (let attempt = 0; ; attempt++) {
+    let res;
+    try {
+      res = await fetch(URL, {
+        method:  "POST",
+        agent,
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({ logs }),
+      });
+    } catch (err) {
+      if (attempt < 10) {
+        await new Promise((r) => setTimeout(r, 100 * (attempt + 1)));
+        continue;
+      }
+      throw err;
+    }
+    if (res.status === 503 && attempt < 10) {
+      await new Promise((r) => setTimeout(r, 100 * (attempt + 1)));
+      continue;
+    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+    return res.json();
+  }
 }
 
 async function runOnce(run) {

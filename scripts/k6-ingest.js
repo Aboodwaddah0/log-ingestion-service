@@ -1,7 +1,7 @@
 import http from 'k6/http';
 import { check } from 'k6';
 
-const URL = 'http://localhost:8080/logs';
+const URL = `http://localhost:${__ENV.PORT || '8080'}/logs`;
 
 function generateLogs(count) {
   const logs = [];

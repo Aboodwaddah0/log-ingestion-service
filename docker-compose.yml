@@ -9,7 +9,7 @@ services:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: password
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
       POSTGRES_DB: logs
     depends_on:
       postgres:
@@ -22,25 +22,12 @@ services:
     image: postgres:16
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: password
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
       POSTGRES_DB: logs
     ports:
-      - "5432:5432"
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
     cpus: 1
     mem_limit: 1g
-    command: >
-      postgres
-      -c synchronous_commit=off
-      -c wal_buffers=16MB
-      -c checkpoint_completion_target=0.9
-      -c max_wal_size=1GB
-      -c shared_buffers=256MB
-      -c max_connections=100
-      -c gin_pending_list_limit=64MB
-      -c maintenance_work_mem=128MB
-      -c work_mem=16MB
-      -c effective_cache_size=768MB
-      -c random_page_cost=1.1
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s

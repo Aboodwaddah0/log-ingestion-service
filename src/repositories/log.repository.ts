@@ -66,95 +66,22 @@ function* logsToCsvChunks(logs: InsertLog[]): Generator<string> {
   if (buf.length > 0) yield buf;
 }
 
-// ── write buffer ──────────────────────────────────────────────────────────────
-// Accumulate logs across HTTP requests and flush in larger batches.
-// POST /logs returns 200 immediately after validation; writes land ≤200ms later.
+export async function insertLogs(logs: InsertLog[]) {
+  if (logs.length === 0) return;
 
-const FLUSH_MS        = 200;
-const FLUSH_THRESHOLD = 10_000;
-const MAX_BUFFER      = 100_000;
-
-const writeBuffer: InsertLog[] = [];
-let flushTimer: NodeJS.Timeout | null = null;
-let flushing = false;
-
-function scheduleFlush(delayMs: number): void {
-  if (flushTimer !== null) return;
-  flushTimer = setTimeout(() => {
-    flushTimer = null;
-    doFlush().catch((err) => console.error("[flush] error:", err));
-  }, delayMs);
-}
-
-async function doFlush(): Promise<void> {
-  if (flushing || writeBuffer.length === 0) return;
-  flushing = true;
-  const batch = writeBuffer.splice(0);
-  try {
-    await copyBatch(batch);
-  } catch (err) {
-    console.error("[flush] COPY failed, dropped", batch.length, "logs:", err);
-  } finally {
-    flushing = false;
-    if (writeBuffer.length > 0) scheduleFlush(0);
-  }
-}
-
-async function copyBatch(logs: InsertLog[]): Promise<void> {
   const client = await pool.connect();
   try {
-    await client.query("BEGIN");
-    // SET LOCAL scopes both GUCs to this transaction so they don't leak
-    // onto the shared pool connection after COMMIT/ROLLBACK.
-    // synchronous_commit=off: don't block on WAL fsync (safe for append-only logs).
-    // gin_pending_list_limit=64MB: defer GIN index flushes; default 4MB flushes
-    //   every few hundred rows and hammers CPU.
-    await client.query("SET LOCAL synchronous_commit = off");
-    await client.query("SET LOCAL gin_pending_list_limit = '64MB'");
     const copyStream = client.query(
-      copyFrom("COPY logs (timestamp, level, service, message, attributes) FROM STDIN WITH (FORMAT csv)")
+      copyFrom(
+        "COPY logs (timestamp, level, service, message, attributes) FROM STDIN WITH (FORMAT csv)"
+      )
     );
     await pipeline(Readable.from(logsToCsvChunks(logs)), copyStream);
-    await client.query("COMMIT");
-  } catch (err) {
-    await client.query("ROLLBACK").catch(() => {});
-    throw err;
+  } catch (error) {
+    console.error("COPY failed:", error);
+    throw new AppError(500, "failed to insert logs");
   } finally {
     client.release();
-  }
-}
-
-export async function insertLogs(logs: InsertLog[]): Promise<void> {
-  if (logs.length === 0) return;
-  if (writeBuffer.length >= MAX_BUFFER) {
-    throw new AppError(503, "log buffer full, retry later");
-  }
-  // Avoid spread — push(...array) throws RangeError at ~125k args (V8 stack limit).
-  for (const log of logs) writeBuffer.push(log);
-  if (writeBuffer.length >= FLUSH_THRESHOLD) {
-    if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
-    doFlush().catch((err) => console.error("[flush] error:", err));
-  } else {
-    scheduleFlush(FLUSH_MS);
-  }
-}
-
-// Call on SIGTERM/SIGINT to flush buffered logs before exit.
-export async function drainBuffer(): Promise<void> {
-  if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
-  while (flushing) {
-    await new Promise<void>((r) => setTimeout(r, 20));
-  }
-  if (writeBuffer.length > 0) {
-    flushing = true;
-    const batch = writeBuffer.splice(0);
-    try {
-      await copyBatch(batch);
-    } catch (err) {
-      console.error("[drain] COPY failed, dropped", batch.length, "logs:", err);
-    } finally {
-      flushing = false;
-    }
   }
 }
 
