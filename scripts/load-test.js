@@ -8,8 +8,8 @@ config({ path: path.join(path.dirname(fileURLToPath(import.meta.url)), "..", ".e
 
 const URL = `http://127.0.0.1:${process.env.PORT ?? 8080}/logs`;
 
-const TOTAL_LOGS  = 200_000;
-const BATCH_SIZE  = 5_000;
+const TOTAL_LOGS  = 2000000;
+const BATCH_SIZE  = 50000;
 const CONCURRENCY = 5;
 const RUNS        = Number(process.env.RUNS ?? 3);
 

@@ -1,6 +1,7 @@
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { from as copyFrom } from "pg-copy-streams";
+import type { PoolClient } from "pg";
 import { pool } from "../db/pool.js";
 import { AppError } from "../errors/AppError.js";
 
@@ -66,10 +67,83 @@ function* logsToCsvChunks(logs: InsertLog[]): Generator<string> {
   if (buf.length > 0) yield buf;
 }
 
+// pg-pool throws this exact plain Error when connectionTimeoutMillis elapses
+// waiting for a free connection (node_modules/pg-pool/index.js) — the pool is
+// genuinely saturated, not a bug, so it should surface as a retryable 503.
+function isPoolTimeout(error: unknown): boolean {
+  return error instanceof Error && error.message === "timeout exceeded when trying to connect";
+}
+
+// ── aggregate rollup ─────────────────────────────────────────────────────────
+// logs_agg_1m holds per-minute (bucket, service, level) counts so aggregateLogs
+// can SUM a few dozen rollup rows instead of scanning every raw log in range.
+// Updated once per insert batch (not per row) to keep write cost negligible.
+
+interface RollupDelta {
+  bucket_start: string;
+  service: string;
+  level: string;
+  count: number;
+}
+
+function computeRollupDeltas(logs: InsertLog[]): RollupDelta[] {
+  const deltas = new Map<string, RollupDelta>();
+  for (const log of logs) {
+    const bucketMs = Math.floor(new Date(log.timestamp).getTime() / 60_000) * 60_000;
+    const bucketIso = new Date(bucketMs).toISOString();
+    const key = `${bucketIso}|${log.service}|${log.level}`;
+    const existing = deltas.get(key);
+    if (existing) {
+      existing.count++;
+    } else {
+      deltas.set(key, { bucket_start: bucketIso, service: log.service, level: log.level, count: 1 });
+    }
+  }
+  return [...deltas.values()];
+}
+
+async function upsertRollup(client: PoolClient, deltas: RollupDelta[]): Promise<void> {
+  if (deltas.length === 0) return;
+  // Concurrent batches touching overlapping (bucket, service, level) rows must
+  // lock them in the same order, or Postgres can deadlock two transactions
+  // waiting on each other's rows. Sorting gives every concurrent upsert the
+  // same lock-acquisition order.
+  const sorted = [...deltas].sort((a, b) =>
+    a.bucket_start < b.bucket_start ? -1 : a.bucket_start > b.bucket_start ? 1 :
+    a.service < b.service ? -1 : a.service > b.service ? 1 :
+    a.level < b.level ? -1 : a.level > b.level ? 1 : 0
+  );
+  const values: unknown[] = [];
+  const placeholders = sorted
+    .map((d) => {
+      const base = values.length;
+      values.push(d.bucket_start, d.service, d.level, d.count);
+      return `($${base + 1}::timestamptz, $${base + 2}, $${base + 3}, $${base + 4}::bigint)`;
+    })
+    .join(", ");
+  await client.query(
+    `INSERT INTO logs_agg_1m (bucket_start, service, level, count)
+     VALUES ${placeholders}
+     ON CONFLICT (bucket_start, service, level)
+     DO UPDATE SET count = logs_agg_1m.count + EXCLUDED.count`,
+    values
+  );
+}
+
 export async function insertLogs(logs: InsertLog[]) {
   if (logs.length === 0) return;
 
-  const client = await pool.connect();
+  let client: PoolClient;
+  try {
+    client = await pool.connect();
+  } catch (error) {
+    if (isPoolTimeout(error)) {
+      throw new AppError(503, "database overloaded, retry later");
+    }
+    console.error("failed to acquire connection:", error);
+    throw new AppError(500, "failed to insert logs");
+  }
+
   try {
     const copyStream = client.query(
       copyFrom(
@@ -77,6 +151,11 @@ export async function insertLogs(logs: InsertLog[]) {
       )
     );
     await pipeline(Readable.from(logsToCsvChunks(logs)), copyStream);
+    // Rollup update is a separate implicit transaction from the COPY above —
+    // a crash between the two could leave the rollup slightly undercounted,
+    // but logs itself (the source of truth) is unaffected. Acceptable given
+    // the rollup only backs aggregate performance, not correctness.
+    await upsertRollup(client, computeRollupDeltas(logs));
   } catch (error) {
     console.error("COPY failed:", error);
     throw new AppError(500, "failed to insert logs");
@@ -194,6 +273,9 @@ export async function getLogs(params: LogQuery) {
     if (error instanceof AppError) {
       throw error;
     }
+    if (isPoolTimeout(error)) {
+      throw new AppError(503, "database overloaded, retry later");
+    }
 
     console.error("GET logs failed:", error);
     throw new AppError(500, "failed to fetch logs");
@@ -210,6 +292,74 @@ const BUCKET_SECONDS: Record<string, number> = {
 };
 
 export async function aggregateLogs(params: AggregateQuery) {
+  // The rollup has no attribute/message data, so attr- or q-filtered aggregates
+  // must fall back to scanning raw logs — everything else can use it.
+  if (params.attrs || params.q) {
+    return aggregateFromScan(params);
+  }
+  return aggregateFromRollup(params);
+}
+
+async function aggregateFromRollup(params: AggregateQuery) {
+  const conditions: string[] = [];
+  const values: unknown[] = [];
+
+  const push = (val: unknown) => {
+    values.push(val);
+    return `$${values.length}`;
+  };
+
+  conditions.push(`bucket_start >= ${push(params.since)}::timestamptz`);
+  conditions.push(`bucket_start < ${push(params.until)}::timestamptz`);
+  if (params.service) conditions.push(`service = ${push(params.service)}`);
+  if (params.level)   conditions.push(`level = ${push(params.level)}`);
+
+  const where = `WHERE ${conditions.join(" AND ")}`;
+
+  // bucketSec is always one of {60,300,3600,86400}, all multiples of the
+  // rollup's 1m granularity — safe to inline and always re-buckets cleanly.
+  const bucketSec = BUCKET_SECONDS[params.bucket];
+  const bucketExpr = `to_timestamp(floor(extract(epoch from bucket_start) / ${bucketSec}) * ${bucketSec})`;
+
+  // group_by is always "service" or "level" (validated) — safe to inline as column name
+  const groupSelect = params.group_by ? `${params.group_by} AS group` : `NULL::text AS group`;
+  const groupBy     = params.group_by ? `1, 2` : `1`;
+
+  const sql = `
+    SELECT
+      ${bucketExpr} AS bucket_start,
+      ${groupSelect},
+      SUM(count)::int AS count
+    FROM logs_agg_1m
+    ${where}
+    GROUP BY ${groupBy}
+    ORDER BY bucket_start ASC
+  `;
+
+  try {
+    const result = await pool.query<{
+      bucket_start: Date;
+      group: string | null;
+      count: number;
+    }>(sql, values);
+
+    return {
+      buckets: result.rows.map((r) => ({
+        start: r.bucket_start.toISOString(),
+        group: r.group,
+        count: r.count,
+      })),
+    };
+  } catch (error) {
+    if (isPoolTimeout(error)) {
+      throw new AppError(503, "database overloaded, retry later");
+    }
+    console.error("aggregate (rollup) failed:", error);
+    throw new AppError(500, "failed to aggregate logs");
+  }
+}
+
+async function aggregateFromScan(params: AggregateQuery) {
   const conditions: string[] = [];
   const values: unknown[] = [];
 
@@ -266,6 +416,9 @@ export async function aggregateLogs(params: AggregateQuery) {
       })),
     };
   } catch (error) {
+    if (isPoolTimeout(error)) {
+      throw new AppError(503, "database overloaded, retry later");
+    }
     console.error("aggregate failed:", error);
     throw new AppError(500, "failed to aggregate logs");
   }

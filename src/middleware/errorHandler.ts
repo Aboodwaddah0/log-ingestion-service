@@ -8,6 +8,9 @@ export function errorHandler(
     _next: NextFunction
 ) {
     if (err instanceof AppError) {
+        if (err.statusCode === 503) {
+            res.set("Retry-After", "2");
+        }
         res.status(err.statusCode).json({ error: err.message });
         return;
     }

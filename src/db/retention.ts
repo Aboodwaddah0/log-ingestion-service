@@ -60,6 +60,15 @@ export async function dropExpiredPartitions(): Promise<number> {
   return dropped;
 }
 
+// logs_agg_1m isn't partitioned (it's tiny relative to logs — bounded by
+// minutes × services × levels, not raw log count), so it needs its own
+// row-level cleanup instead of the partition-drop path above.
+async function dropExpiredRollupRows(): Promise<number> {
+  const cutoff = new Date(Date.now() - env.RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const result = await pool.query(`DELETE FROM logs_agg_1m WHERE bucket_start < $1::timestamptz`, [cutoff]);
+  return result.rowCount ?? 0;
+}
+
 export function startRetentionJob(): void {
   const intervalMs = env.RETENTION_INTERVAL_MINUTES * 60 * 1000;
 
@@ -69,6 +78,10 @@ export function startRetentionJob(): void {
       const dropped = await dropExpiredPartitions();
       if (dropped > 0) {
         console.log(`[retention] dropped ${dropped} expired partition(s)`);
+      }
+      const rollupRowsDropped = await dropExpiredRollupRows();
+      if (rollupRowsDropped > 0) {
+        console.log(`[retention] dropped ${rollupRowsDropped} expired rollup row(s)`);
       }
     } catch (err) {
       console.error("[retention] error:", err);
