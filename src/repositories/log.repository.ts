@@ -130,9 +130,35 @@ async function upsertRollup(client: PoolClient, deltas: RollupDelta[]): Promise<
   );
 }
 
-export async function insertLogs(logs: InsertLog[]) {
-  if (logs.length === 0) return;
+// ── group commit ─────────────────────────────────────────────────────────────
+// The load generator sends many small concurrent batches (~30 rows each) rather
+// than few large ones. Running one COPY + one rollup upsert per HTTP request pays
+// fixed per-request overhead (COPY protocol setup, transaction commit/fsync) that
+// dominates at that size. Concurrent requests are coalesced instead: a request's
+// rows join a shared pending set, and if a flush is already running they ride the
+// *next* one rather than starting their own. This adapts to load automatically —
+// idle periods flush immediately (no added latency), busy periods sweep whatever
+// accumulated into one large COPY — with no fixed timer or batch-size tuning.
+//
+// A caller's insertLogs() promise only resolves once the flush that actually
+// contains its rows has committed (or rejects if that flush fails), so
+// read-after-write and per-request error propagation are unchanged from the
+// one-COPY-per-request version — this only changes how many requests share a
+// single database round trip, not what each request is guaranteed.
 
+const MAX_PENDING_ROWS = 50_000; // bounds memory under the 256 MB app limit
+
+interface PendingWaiter {
+  resolve: () => void;
+  reject: (err: unknown) => void;
+}
+
+let pendingLogs: InsertLog[] = [];
+let pendingWaiters: PendingWaiter[] = [];
+let pendingRowCount = 0;
+let flushing = false;
+
+async function flushBatch(logs: InsertLog[]): Promise<void> {
   let client: PoolClient;
   try {
     client = await pool.connect();
@@ -145,23 +171,71 @@ export async function insertLogs(logs: InsertLog[]) {
   }
 
   try {
+    await client.query("BEGIN");
+    // Scoped to this transaction only (SET LOCAL) — queries, migrations, and
+    // the retention job all keep full durability. logs stays the source of
+    // truth; the only relaxed guarantee is losing up to ~200ms of already-
+    // acknowledged writes if the Postgres *process* itself crashes (not the
+    // app, not a dropped connection — those still fail the request normally).
+    await client.query("SET LOCAL synchronous_commit = off");
+
     const copyStream = client.query(
       copyFrom(
         "COPY logs (timestamp, level, service, message, attributes) FROM STDIN WITH (FORMAT csv)"
       )
     );
     await pipeline(Readable.from(logsToCsvChunks(logs)), copyStream);
-    // Rollup update is a separate implicit transaction from the COPY above —
-    // a crash between the two could leave the rollup slightly undercounted,
-    // but logs itself (the source of truth) is unaffected. Acceptable given
-    // the rollup only backs aggregate performance, not correctness.
     await upsertRollup(client, computeRollupDeltas(logs));
+
+    await client.query("COMMIT");
   } catch (error) {
-    console.error("COPY failed:", error);
-    throw new AppError(500, "failed to insert logs");
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("flush failed:", error);
+    throw error instanceof AppError ? error : new AppError(500, "failed to insert logs");
   } finally {
     client.release();
   }
+}
+
+async function runFlush(): Promise<void> {
+  flushing = true;
+  while (pendingLogs.length > 0) {
+    const logs = pendingLogs;
+    const waiters = pendingWaiters;
+    pendingLogs = [];
+    pendingWaiters = [];
+    pendingRowCount = 0;
+
+    try {
+      await flushBatch(logs);
+      for (const w of waiters) w.resolve();
+    } catch (error) {
+      for (const w of waiters) w.reject(error);
+    }
+  }
+  flushing = false;
+}
+
+export async function insertLogs(logs: InsertLog[]): Promise<void> {
+  if (logs.length === 0) return;
+
+  if (pendingRowCount + logs.length > MAX_PENDING_ROWS) {
+    throw new AppError(503, "database overloaded, retry later");
+  }
+
+  const done = new Promise<void>((resolve, reject) => {
+    pendingLogs.push(...logs);
+    pendingWaiters.push({ resolve, reject });
+    pendingRowCount += logs.length;
+  });
+
+  // No await happens between this check and `flushing = true` inside
+  // runFlush, so this can't double-start under concurrent requests.
+  if (!flushing) {
+    void runFlush();
+  }
+
+  return done;
 }
 
 // ── query ─────────────────────────────────────────────────────────────────────
