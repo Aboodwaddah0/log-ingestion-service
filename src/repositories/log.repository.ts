@@ -5,6 +5,7 @@ import type { PoolClient } from "pg";
 import { pool } from "../db/pool.js";
 import { AppError } from "../errors/AppError.js";
 
+
 export interface InsertLog {
   timestamp: string;
   level: "debug" | "info" | "warn" | "error";
@@ -12,6 +13,8 @@ export interface InsertLog {
   message: string;
   attributes?: Record<string, string | number | boolean>;
 }
+
+
 
 export interface LogQuery {
   service?: string;
@@ -24,6 +27,7 @@ export interface LogQuery {
   attrs?: Record<string, string>;
 }
 
+
 export interface AggregateQuery {
   since: string;
   until: string;
@@ -35,9 +39,10 @@ export interface AggregateQuery {
   attrs?: Record<string, string>;
 }
 
-// ── insert ────────────────────────────────────────────────────────────────────
+function isPoolTimeout(error: unknown): boolean {
+  return error instanceof Error && error.message === "timeout exceeded when trying to connect";
+}
 
-// timestamp and level are never passed here — plain ASCII, never need quoting.
 function csvField(s: string): string {
   if (s.includes('"') || s.includes(',') || s.includes('\n') || s.includes('\r')) {
     return '"' + s.replace(/"/g, '""') + '"';
@@ -45,8 +50,7 @@ function csvField(s: string): string {
   return s;
 }
 
-// Flush accumulated rows to the stream in ~64 KB chunks instead of one yield
-// per row, which cuts stream-write overhead by ~100× for a 5,000-row batch.
+
 const CHUNK_SIZE = 65536;
 
 function* logsToCsvChunks(logs: InsertLog[]): Generator<string> {
@@ -66,18 +70,6 @@ function* logsToCsvChunks(logs: InsertLog[]): Generator<string> {
   }
   if (buf.length > 0) yield buf;
 }
-
-// pg-pool throws this exact plain Error when connectionTimeoutMillis elapses
-// waiting for a free connection (node_modules/pg-pool/index.js) — the pool is
-// genuinely saturated, not a bug, so it should surface as a retryable 503.
-function isPoolTimeout(error: unknown): boolean {
-  return error instanceof Error && error.message === "timeout exceeded when trying to connect";
-}
-
-// ── aggregate rollup ─────────────────────────────────────────────────────────
-// logs_agg_1m holds per-minute (bucket, service, level) counts so aggregateLogs
-// can SUM a few dozen rollup rows instead of scanning every raw log in range.
-// Updated once per insert batch (not per row) to keep write cost negligible.
 
 interface RollupDelta {
   bucket_start: string;
@@ -104,10 +96,7 @@ function computeRollupDeltas(logs: InsertLog[]): RollupDelta[] {
 
 async function upsertRollup(client: PoolClient, deltas: RollupDelta[]): Promise<void> {
   if (deltas.length === 0) return;
-  // Concurrent batches touching overlapping (bucket, service, level) rows must
-  // lock them in the same order, or Postgres can deadlock two transactions
-  // waiting on each other's rows. Sorting gives every concurrent upsert the
-  // same lock-acquisition order.
+
   const sorted = [...deltas].sort((a, b) =>
     a.bucket_start < b.bucket_start ? -1 : a.bucket_start > b.bucket_start ? 1 :
     a.service < b.service ? -1 : a.service > b.service ? 1 :
@@ -130,23 +119,7 @@ async function upsertRollup(client: PoolClient, deltas: RollupDelta[]): Promise<
   );
 }
 
-// ── group commit ─────────────────────────────────────────────────────────────
-// The load generator sends many small concurrent batches (~30 rows each) rather
-// than few large ones. Running one COPY + one rollup upsert per HTTP request pays
-// fixed per-request overhead (COPY protocol setup, transaction commit/fsync) that
-// dominates at that size. Concurrent requests are coalesced instead: a request's
-// rows join a shared pending set, and if a flush is already running they ride the
-// *next* one rather than starting their own. This adapts to load automatically —
-// idle periods flush immediately (no added latency), busy periods sweep whatever
-// accumulated into one large COPY — with no fixed timer or batch-size tuning.
-//
-// A caller's insertLogs() promise only resolves once the flush that actually
-// contains its rows has committed (or rejects if that flush fails), so
-// read-after-write and per-request error propagation are unchanged from the
-// one-COPY-per-request version — this only changes how many requests share a
-// single database round trip, not what each request is guaranteed.
-
-const MAX_PENDING_ROWS = 50_000; // bounds memory under the 256 MB app limit
+const MAX_PENDING_ROWS = 50_000;
 
 interface PendingWaiter {
   resolve: () => void;
@@ -172,11 +145,6 @@ async function flushBatch(logs: InsertLog[]): Promise<void> {
 
   try {
     await client.query("BEGIN");
-    // Scoped to this transaction only (SET LOCAL) — queries, migrations, and
-    // the retention job all keep full durability. logs stays the source of
-    // truth; the only relaxed guarantee is losing up to ~200ms of already-
-    // acknowledged writes if the Postgres *process* itself crashes (not the
-    // app, not a dropped connection — those still fail the request normally).
     await client.query("SET LOCAL synchronous_commit = off");
 
     const copyStream = client.query(
@@ -229,8 +197,6 @@ export async function insertLogs(logs: InsertLog[]): Promise<void> {
     pendingRowCount += logs.length;
   });
 
-  // No await happens between this check and `flushing = true` inside
-  // runFlush, so this can't double-start under concurrent requests.
   if (!flushing) {
     void runFlush();
   }
