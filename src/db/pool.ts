@@ -10,4 +10,9 @@ export const pool = new Pool({
     max: 20,
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 10_000,
+    // Runaway-query guard, not a latency policy — deliberately generous so it
+    // never trips under normal load (Http Error Rate must stay 0.00%). Without
+    // this, an abandoned slow query keeps burning the single Postgres CPU and
+    // compounds the degradation for every request behind it.
+    statement_timeout: 15_000,
 });

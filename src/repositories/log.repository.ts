@@ -43,6 +43,49 @@ function isPoolTimeout(error: unknown): boolean {
   return error instanceof Error && error.message === "timeout exceeded when trying to connect";
 }
 
+// Postgres query_canceled (statement_timeout fired) — the pool's statement_timeout
+// is a runaway-query guard, not a latency policy, so this maps to the same
+// backpressure signal as a pool-connect timeout.
+function isStatementTimeout(error: unknown): boolean {
+  return typeof error === "object" && error !== null && (error as { code?: string }).code === "57014";
+}
+
+// attributes is indexed with a jsonb_path_ops GIN index, which only supports the
+// containment operator (@>) — not the ->> text-extraction operator this used to
+// use. @> is type-strict, so the stored value's type has to be guessed from the
+// query-string value (always a string) to keep matching what ->> matched before:
+// a numeric-looking value must also match a stored JSON number, "true"/"false"
+// must also match a stored JSON boolean.
+function attrCondition(push: (val: unknown) => string, key: string, val: string): string {
+  const keyPlaceholder = push(key);
+  const candidates = [`jsonb_build_object(${keyPlaceholder}::text, ${push(val)}::text)`];
+  if (val !== "" && !Number.isNaN(Number(val))) {
+    candidates.push(`jsonb_build_object(${keyPlaceholder}::text, ${push(val)}::numeric)`);
+  }
+  if (val === "true" || val === "false") {
+    candidates.push(`jsonb_build_object(${keyPlaceholder}::text, ${push(val)}::boolean)`);
+  }
+  return `(${candidates.map((c) => `attributes @> ${c}`).join(" OR ")})`;
+}
+
+// The cursor must survive a Postgres timestamptz's microsecond precision — a JS
+// Date (ms only) would truncate it and silently skip rows whose timestamp falls
+// in the truncated band. base64url makes it opaque per the spec; the legacy plain
+// "ts,id" form is still accepted so an in-flight cursor doesn't 400.
+const CURSOR_PATTERN = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z),(\d+)$/;
+
+function encodeCursor(ts: string, id: string): string {
+  return Buffer.from(`${ts},${id}`, "utf8").toString("base64url");
+}
+
+function decodeCursor(cursor: string): { ts: string; id: string } | null {
+  const tryMatch = (s: string) => {
+    const m = CURSOR_PATTERN.exec(s);
+    return m ? { ts: m[1], id: m[2] } : null;
+  };
+  return tryMatch(Buffer.from(cursor, "base64url").toString("utf8")) ?? tryMatch(cursor);
+}
+
 function csvField(s: string): string {
   if (s.includes('"') || s.includes(',') || s.includes('\n') || s.includes('\r')) {
     return '"' + s.replace(/"/g, '""') + '"';
@@ -243,20 +286,17 @@ export async function getLogs(params: LogQuery) {
 
   if (params.attrs) {
     for (const [key, val] of Object.entries(params.attrs)) {
-      conditions.push(
-        `attributes->>${push(key)} = ${push(val)}`
-      );
+      conditions.push(attrCondition(push, key, val));
     }
   }
 
   if (params.cursor) {
-    const parts = params.cursor.split(",");
-    const [ts, id] = parts;
-    if (parts.length !== 2 || !ts || !id || isNaN(new Date(ts).getTime()) || !/^\d+$/.test(id)) {
+    const parsed = decodeCursor(params.cursor);
+    if (!parsed) {
       throw new AppError(400, "invalid or malformed cursor");
     }
     conditions.push(
-      `(timestamp, id) < (${push(ts)}::timestamptz, ${push(id)}::bigint)`
+      `(timestamp, id) < (${push(parsed.ts)}::timestamptz, ${push(parsed.id)}::bigint)`
     );
   }
 
@@ -274,8 +314,10 @@ export async function getLogs(params: LogQuery) {
       service: string;
       message: string;
       attributes: Record<string, unknown>;
+      cursor_ts: string;
     }>(
-      `SELECT id, timestamp, level, service, message, attributes
+      `SELECT id, timestamp, level, service, message, attributes,
+              to_char(timestamp AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_ts
        FROM logs
        ${where}
        ORDER BY timestamp DESC, id DESC
@@ -295,7 +337,7 @@ export async function getLogs(params: LogQuery) {
 
     const next_cursor =
       hasMore && last
-        ? `${last.timestamp.toISOString()},${last.id}`
+        ? encodeCursor(last.cursor_ts, last.id)
         : null;
 
     return {
@@ -313,7 +355,7 @@ export async function getLogs(params: LogQuery) {
     if (error instanceof AppError) {
       throw error;
     }
-    if (isPoolTimeout(error)) {
+    if (isPoolTimeout(error) || isStatementTimeout(error)) {
       throw new AppError(503, "database overloaded, retry later");
     }
 
@@ -391,7 +433,7 @@ async function aggregateFromRollup(params: AggregateQuery) {
       })),
     };
   } catch (error) {
-    if (isPoolTimeout(error)) {
+    if (isPoolTimeout(error) || isStatementTimeout(error)) {
       throw new AppError(503, "database overloaded, retry later");
     }
     console.error("aggregate (rollup) failed:", error);
@@ -416,7 +458,7 @@ async function aggregateFromScan(params: AggregateQuery) {
   if (params.q)       conditions.push(`message ILIKE ${push(`%${params.q}%`)}`);
   if (params.attrs) {
     for (const [key, val] of Object.entries(params.attrs)) {
-      conditions.push(`attributes->>${push(key)} = ${push(val)}`);
+      conditions.push(attrCondition(push, key, val));
     }
   }
 
@@ -456,7 +498,7 @@ async function aggregateFromScan(params: AggregateQuery) {
       })),
     };
   } catch (error) {
-    if (isPoolTimeout(error)) {
+    if (isPoolTimeout(error) || isStatementTimeout(error)) {
       throw new AppError(503, "database overloaded, retry later");
     }
     console.error("aggregate failed:", error);
