@@ -137,27 +137,36 @@ function computeRollupDeltas(logs: InsertLog[]): RollupDelta[] {
   return [...deltas.values()];
 }
 
-async function upsertRollup(client: PoolClient, deltas: RollupDelta[]): Promise<void> {
+async function upsertRollup(client: PoolClient, deltas: RollupDelta[]):Promise<void> {
+  
   if (deltas.length === 0) return;
 
-  const sorted = [...deltas].sort((a, b) =>
-    a.bucket_start < b.bucket_start ? -1 : a.bucket_start > b.bucket_start ? 1 :
-    a.service < b.service ? -1 : a.service > b.service ? 1 :
-    a.level < b.level ? -1 : a.level > b.level ? 1 : 0
-  );
   const values: unknown[] = [];
-  const placeholders = sorted
-    .map((d) => {
-      const base = values.length;
-      values.push(d.bucket_start, d.service, d.level, d.count);
-      return `($${base + 1}::timestamptz, $${base + 2}, $${base + 3}, $${base + 4}::bigint)`;
+
+  const placeholders = deltas
+    .map((delta) => {
+      const i = values.length;
+
+      values.push(
+        delta.bucket_start,
+        delta.service,
+        delta.level,
+        delta.count
+      );
+
+      return `($${i + 1}::timestamptz, $${i + 2}, $${i + 3}, $${i + 4}::bigint)`;
     })
     .join(", ");
+
   await client.query(
-    `INSERT INTO logs_agg_1m (bucket_start, service, level, count)
-     VALUES ${placeholders}
-     ON CONFLICT (bucket_start, service, level)
-     DO UPDATE SET count = logs_agg_1m.count + EXCLUDED.count`,
+    `
+      INSERT INTO logs_agg_1m
+        (bucket_start, service, level, count)
+      VALUES ${placeholders}
+      ON CONFLICT (bucket_start, service, level)
+      DO UPDATE SET
+        count = logs_agg_1m.count + EXCLUDED.count
+    `,
     values
   );
 }
@@ -374,8 +383,7 @@ const BUCKET_SECONDS: Record<string, number> = {
 };
 
 export async function aggregateLogs(params: AggregateQuery) {
-  // The rollup has no attribute/message data, so attr- or q-filtered aggregates
-  // must fall back to scanning raw logs — everything else can use it.
+ 
   if (params.attrs || params.q) {
     return aggregateFromScan(params);
   }
@@ -398,12 +406,11 @@ async function aggregateFromRollup(params: AggregateQuery) {
 
   const where = `WHERE ${conditions.join(" AND ")}`;
 
-  // bucketSec is always one of {60,300,3600,86400}, all multiples of the
-  // rollup's 1m granularity — safe to inline and always re-buckets cleanly.
+  
   const bucketSec = BUCKET_SECONDS[params.bucket];
   const bucketExpr = `to_timestamp(floor(extract(epoch from bucket_start) / ${bucketSec}) * ${bucketSec})`;
 
-  // group_by is always "service" or "level" (validated) — safe to inline as column name
+
   const groupSelect = params.group_by ? `${params.group_by} AS group` : `NULL::text AS group`;
   const groupBy     = params.group_by ? `1, 2` : `1`;
 
@@ -464,11 +471,9 @@ async function aggregateFromScan(params: AggregateQuery) {
 
   const where = `WHERE ${conditions.join(" AND ")}`;
 
-  // bucketSec is always one of {60,300,3600,86400} — safe to inline
   const bucketSec = BUCKET_SECONDS[params.bucket];
   const bucketExpr = `to_timestamp(floor(extract(epoch from timestamp) / ${bucketSec}) * ${bucketSec})`;
 
-  // group_by is always "service" or "level" (validated) — safe to inline as column name
   const groupSelect = params.group_by ? `${params.group_by} AS group` : `NULL::text AS group`;
   const groupBy     = params.group_by ? `1, 2` : `1`;
 
