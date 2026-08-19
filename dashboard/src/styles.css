@@ -255,41 +255,87 @@ body {
   border-radius: 6px;
 }
 
-.chart-bars {
+.chart-plot {
   display: flex;
-  align-items: flex-end;
-  gap: 0.35rem;
-  height: 180px;
-  overflow-x: auto;
-  padding-bottom: 0.25rem;
+  align-items: stretch;
+  gap: 0.5rem;
 }
 
-.chart-column {
+.chart-yaxis-title {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  white-space: nowrap;
+  align-self: center;
+  font-size: 0.7rem;
+  color: var(--muted);
+}
+
+.chart-yticks {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  min-width: 28px;
-  height: 100%;
+  justify-content: space-between;
+  height: 180px;
+  padding-bottom: 0.25rem;
+  font-size: 0.65rem;
+  color: var(--muted);
+  text-align: right;
 }
 
-.chart-bar-group {
-  display: flex;
-  align-items: flex-end;
-  gap: 2px;
-  height: 100%;
+.chart-bars-wrap {
   flex: 1;
+  min-width: 0;
 }
 
-.chart-bar {
-  width: 8px;
-  min-height: 1px;
-  border-radius: 2px 2px 0 0;
+.chart-xaxis-title {
+  display: block;
+  text-align: center;
+  font-size: 0.7rem;
+  color: var(--muted);
+  margin-top: 0.35rem;
+}
+
+.chart-svg-frame {
+  height: 180px;
+}
+
+.chart-svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.chart-gridline {
+  stroke: var(--border);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.chart-line {
+  fill: none;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.chart-point {
+  transition: r 0.1s ease;
+}
+
+.chart-point:hover {
+  r: 6;
+}
+
+.chart-xticks {
+  position: relative;
+  height: 1rem;
+  margin-top: 0.25rem;
 }
 
 .chart-label {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
   font-size: 0.65rem;
   color: var(--muted);
-  margin-top: 0.25rem;
   white-space: nowrap;
 }
 
@@ -309,8 +355,8 @@ body {
 }
 
 .legend-swatch {
-  width: 10px;
-  height: 10px;
+  width: 14px;
+  height: 3px;
   border-radius: 2px;
   display: inline-block;
 }

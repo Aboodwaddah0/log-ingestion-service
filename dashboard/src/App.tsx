@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AggregateChart } from "./components/AggregateChart";
 import { FilterBar } from "./components/FilterBar";
 import { LogTable } from "./components/LogTable";
@@ -30,16 +30,35 @@ export default function App() {
   const { logs, nextCursor, loading: logsLoading, error: logsError, loadMore } = useLogs(filters);
   const { buckets, loading: aggLoading, error: aggError } = useAggregate(filters, bucket, groupBy);
 
+  // No endpoint lists distinct services, so the filter's option list is built
+  // from what's actually been seen — it only grows, so a service already
+  // offered stays offered even after a filter narrows the current results.
+  const [knownServices, setKnownServices] = useState<string[]>([]);
+  useEffect(() => {
+    if (logs.length === 0) return;
+    setKnownServices((prev) => {
+      const set = new Set(prev);
+      let changed = false;
+      for (const log of logs) {
+        if (!set.has(log.service)) {
+          set.add(log.service);
+          changed = true;
+        }
+      }
+      return changed ? [...set].sort() : prev;
+    });
+  }, [logs]);
+
   return (
     <div className="app">
       <header className="app-header">
         <h1>Log Dashboard</h1>
       </header>
 
-      <FilterBar filters={filters} onChange={setFilters} />
+      <FilterBar filters={filters} onChange={setFilters} services={knownServices} />
 
       <section className="panel">
-        <h2>Volume over time</h2>
+        <h2>Log Volume Over Time</h2>
         <AggregateChart
           buckets={buckets}
           loading={aggLoading}

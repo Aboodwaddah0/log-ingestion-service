@@ -68,10 +68,7 @@ function attrCondition(push: (val: unknown) => string, key: string, val: string)
   return `(${candidates.map((c) => `attributes @> ${c}`).join(" OR ")})`;
 }
 
-// The cursor must survive a Postgres timestamptz's microsecond precision — a JS
-// Date (ms only) would truncate it and silently skip rows whose timestamp falls
-// in the truncated band. base64url makes it opaque per the spec; the legacy plain
-// "ts,id" form is still accepted so an in-flight cursor doesn't 400.
+ 
 const CURSOR_PATTERN = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z),(\d+)$/;
 
 function encodeCursor(ts: string, id: string): string {

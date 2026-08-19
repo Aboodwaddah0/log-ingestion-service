@@ -2,11 +2,14 @@ services:
   app:
     build: .
     ports:
-      - "${PORT}:${PORT}"
-    env_file:
-      - .env
+      - "${PORT:-8080}:${PORT:-8080}"
     environment:
+      PORT: ${PORT:-8080}
       POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: ${POSTGRES_DB:-logs}
     depends_on:
       postgres:
         condition: service_healthy
@@ -15,14 +18,16 @@ services:
 
   postgres:
     image: postgres:16
-    env_file:
-      - .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: ${POSTGRES_DB:-logs}
     ports:
-      - "${POSTGRES_HOST_PORT}:${POSTGRES_PORT}"
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
     cpus: 1
     mem_limit: 1g
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-logs}"]
       interval: 5s
       timeout: 5s
       retries: 10

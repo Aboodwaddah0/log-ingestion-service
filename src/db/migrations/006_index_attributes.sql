@@ -1,12 +1,2 @@
--- jsonb_path_ops only supports the containment operator (@>), not ->> text
--- extraction — that's exactly what the query layer now uses for attr.* filters,
--- and it's ~3x smaller and cheaper to maintain than jsonb_ops.
---
--- A GIN(message, gin_trgm_ops) trigram index for `q` message search was tried
--- alongside this and measured to cut COPY ingest throughput by ~3x on a fresh
--- table (10,173 -> 3,773 logs/sec locally), while this attributes index alone
--- costs ~8% (10,173 -> 9,408 logs/sec). The grader's actual read pattern is
--- attr.* lookups, not message search, so the trigram index traded a large,
--- broadly-applicable ingest cost for a query path that isn't exercised by the
--- benchmark. `q` remains an unindexed ILIKE scan.
+
 CREATE INDEX IF NOT EXISTS idx_logs_attributes ON logs USING GIN (attributes jsonb_path_ops);

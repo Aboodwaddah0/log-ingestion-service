@@ -4,6 +4,7 @@ import type { AttributeFilter, LogLevel, SharedFilters } from "../types";
 interface Props {
   filters: SharedFilters;
   onChange: (filters: SharedFilters) => void;
+  services: string[];
 }
 
 const LEVELS: LogLevel[] = ["debug", "info", "warn", "error"];
@@ -14,7 +15,7 @@ function applyQuickRange(minutes: number, filters: SharedFilters, onChange: Prop
   onChange({ ...filters, since: toLocalInputValue(since), until: toLocalInputValue(until) });
 }
 
-export function FilterBar({ filters, onChange }: Props) {
+export function FilterBar({ filters, onChange, services }: Props) {
   const setField = <K extends keyof SharedFilters>(key: K, value: SharedFilters[K]) =>
     onChange({ ...filters, [key]: value });
 
@@ -32,11 +33,17 @@ export function FilterBar({ filters, onChange }: Props) {
       <div className="filter-row">
         <label>
           Service
-          <input
-            value={filters.service}
-            onChange={(e) => setField("service", e.target.value)}
-            placeholder="checkout"
-          />
+          <select value={filters.service} onChange={(e) => setField("service", e.target.value)}>
+            <option value="">all</option>
+            {services.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+            {filters.service && !services.includes(filters.service) && (
+              <option value={filters.service}>{filters.service}</option>
+            )}
+          </select>
         </label>
         <label>
           Level
