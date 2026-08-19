@@ -9,6 +9,8 @@ interface Props {
 }
 
 export function LogTable({ logs, loading, error, hasMore, onLoadMore }: Props) {
+  const initialLoad = loading && logs.length === 0;
+
   return (
     <div className="log-table-wrap">
       {error && <div className="error-banner">{error}</div>}
@@ -23,7 +25,15 @@ export function LogTable({ logs, loading, error, hasMore, onLoadMore }: Props) {
             <th>Attributes</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody aria-busy={initialLoad}>
+          {initialLoad &&
+            Array.from({ length: 8 }).map((_, i) => (
+              <tr key={`skeleton-${i}`} className="skeleton-row" aria-hidden="true">
+                <td colSpan={5}>
+                  <div className="skeleton-block" />
+                </td>
+              </tr>
+            ))}
           {logs.map((log) => (
             <tr key={log.id}>
               <td className="ts">{new Date(log.timestamp).toLocaleString()}</td>

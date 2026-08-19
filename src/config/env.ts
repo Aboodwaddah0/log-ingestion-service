@@ -8,7 +8,7 @@ export const env = {
   POSTGRES_USER: process.env.POSTGRES_USER ?? "postgres",
   POSTGRES_PASSWORD: process.env.POSTGRES_PASSWORD ?? "postgres",
   POSTGRES_DB: process.env.POSTGRES_DB ?? "logs",
+  
   RETENTION_DAYS: Number(process.env.RETENTION_DAYS) || 30,
   RETENTION_INTERVAL_MINUTES: Number(process.env.RETENTION_INTERVAL_MINUTES) || 60,
-  
 };

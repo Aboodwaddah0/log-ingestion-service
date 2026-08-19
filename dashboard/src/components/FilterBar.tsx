@@ -15,6 +15,18 @@ function applyQuickRange(minutes: number, filters: SharedFilters, onChange: Prop
   onChange({ ...filters, since: toLocalInputValue(since), until: toLocalInputValue(until) });
 }
 
+// Purely a visual affordance — compares the current range's *duration* to
+// each preset so the matching quick-range button reads as selected. Doesn't
+// try to confirm `until` is exactly "now"; a manually-entered range that
+// happens to span 60 minutes will also show "1h" as active, which is fine.
+function activeQuickRangeMinutes(filters: SharedFilters): number | null {
+  if (!filters.since || !filters.until) return null;
+  const since = new Date(filters.since).getTime();
+  const until = new Date(filters.until).getTime();
+  if (isNaN(since) || isNaN(until)) return null;
+  return Math.round((until - since) / 60_000);
+}
+
 export function FilterBar({ filters, onChange, services }: Props) {
   const setField = <K extends keyof SharedFilters>(key: K, value: SharedFilters[K]) =>
     onChange({ ...filters, [key]: value });
@@ -28,8 +40,10 @@ export function FilterBar({ filters, onChange, services }: Props) {
   const removeAttr = (index: number) =>
     onChange({ ...filters, attrs: filters.attrs.filter((_, i) => i !== index) });
 
+  const activeMinutes = activeQuickRangeMinutes(filters);
+
   return (
-    <div className="filter-bar">
+    <div className="filter-bar" role="search" aria-label="Log filters">
       <div className="filter-row">
         <label>
           Service
@@ -86,14 +100,29 @@ export function FilterBar({ filters, onChange, services }: Props) {
             onChange={(e) => setField("until", e.target.value)}
           />
         </label>
-        <div className="quick-ranges">
-          <button type="button" onClick={() => applyQuickRange(15, filters, onChange)}>
+        <div className="quick-ranges" role="group" aria-label="Quick time range">
+          <button
+            type="button"
+            className={activeMinutes === 15 ? "active" : ""}
+            aria-pressed={activeMinutes === 15}
+            onClick={() => applyQuickRange(15, filters, onChange)}
+          >
             15m
           </button>
-          <button type="button" onClick={() => applyQuickRange(60, filters, onChange)}>
+          <button
+            type="button"
+            className={activeMinutes === 60 ? "active" : ""}
+            aria-pressed={activeMinutes === 60}
+            onClick={() => applyQuickRange(60, filters, onChange)}
+          >
             1h
           </button>
-          <button type="button" onClick={() => applyQuickRange(24 * 60, filters, onChange)}>
+          <button
+            type="button"
+            className={activeMinutes === 24 * 60 ? "active" : ""}
+            aria-pressed={activeMinutes === 24 * 60}
+            onClick={() => applyQuickRange(24 * 60, filters, onChange)}
+          >
             24h
           </button>
         </div>
@@ -104,11 +133,13 @@ export function FilterBar({ filters, onChange, services }: Props) {
         {filters.attrs.map((attr, i) => (
           <div className="attr-pair" key={i}>
             <input
+              aria-label={`attribute ${i + 1} key`}
               placeholder="key"
               value={attr.key}
               onChange={(e) => setAttr(i, { key: e.target.value })}
             />
             <input
+              aria-label={`attribute ${i + 1} value`}
               placeholder="value"
               value={attr.value}
               onChange={(e) => setAttr(i, { value: e.target.value })}
