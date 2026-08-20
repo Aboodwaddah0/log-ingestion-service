@@ -380,7 +380,6 @@ const BUCKET_SECONDS: Record<string, number> = {
 };
 
 export async function aggregateLogs(params: AggregateQuery) {
- 
   if (params.attrs || params.q) {
     return aggregateFromScan(params);
   }
