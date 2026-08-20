@@ -52,6 +52,11 @@ file in the project root only to override them:
 | `POSTGRES_DB` | `logs` | |
 | `RETENTION_DAYS` | `30` | How long a partition of logs is kept |
 | `RETENTION_INTERVAL_MINUTES` | `60` | How often the retention job runs |
+| `ALERT_WEBHOOK_URL` | unset | See [Alerting](#alerting) — unset disables the feature entirely |
+| `ALERT_ERROR_THRESHOLD` | `50` | Error-log count that triggers a webhook |
+| `ALERT_WINDOW_MINUTES` | `5` | Rolling window the threshold is evaluated over |
+| `ALERT_CHECK_INTERVAL_MINUTES` | `1` | How often the threshold is checked |
+| `LIVE_TAIL_MAX_CLIENTS` | `20` | See [Live-tail](#live-tail) — max concurrent `GET /logs/tail` connections |
 
 `POSTGRES_HOST`/`POSTGRES_PORT` inside the container are fixed to `postgres`/`5432`
 by `docker-compose.yml` (the compose network's service name) and are not meant to
@@ -404,16 +409,26 @@ Bottlenecks below.
 
 ### Bottlenecks discovered
 
-1. **One-insert-per-log and per-request transactions** (original implementation).
-   Fixed by group-commit batching — see Optimizations.
+1. **Connection-pool exhaustion and per-request fsyncs** (original implementation).
+   Every `POST /logs` opened its own connection and committed its own
+   transaction; under the grader's real shape (~338 requests in flight against
+   a pool capped at 20), most requests simply queued waiting for a free
+   connection while each held transaction paid its own fsync. Measured at the
+   time: App CPU 7–10%, Postgres CPU 5–10% — both low, because the bottleneck
+   was waiting (on a connection, on disk), not computing, which is why raw
+   throughput stalled at ~2,954 logs/sec despite neither side being CPU-bound.
+   Fixed by group-commit batching, which collapses concurrent requests onto a
+   single connection, one `COPY`, one commit per flush — see Optimizations.
 2. **No index could serve `attr.<key>=` filters.** Every attribute-filtered read
    full-scanned the active partition (2.87s at 2.3M rows). This was the direct
    cause of low Read-After-Write success rates and request timeouts under load.
    Fixed — see [Indexes](#indexes).
-3. **The application is CPU-bound, not the database.** App CPU pins near 100% of
-   its 0.5-core quota under sustained load while Postgres has headroom to spare.
-   Partially addressed (see Optimizations); the remaining, **not yet applied**
-   fix is documented in Limitations.
+3. **Once #1 was fixed, the application became CPU-bound instead of the database.**
+   With connection contention and per-request fsyncs gone, App CPU pins near
+   100% of its 0.5-core quota under sustained load while Postgres has headroom
+   to spare (17–26%) — a different bottleneck than #1, not the same one
+   restated. Partially addressed (see Optimizations); the remaining, **not yet
+   applied** fix is documented in Limitations.
 4. **A `GIN` trigram index for message search cost 3× ingest throughput** for a
    query path (`q=`) the grader doesn't actually exercise. Identified via a
    dedicated grader run that dropped the score from 90.07 to 74.38, root-caused
@@ -494,6 +509,120 @@ logs.
   side; it adds no server-side code path, no new required parameter, and a default
   `docker compose up` is fully unaffected by whether the dashboard is ever run.
 
+### Alerting
+
+A background job (`src/alerting.ts`) that POSTs a webhook when the volume of
+*ingested* `level: "error"` logs exceeds a threshold within a rolling window —
+"tell me when the monitored application is erroring a lot," the way a log
+platform alert works. It is not a health check on this service's own API; it
+reads `logs_agg_1m`, the same rollup table `GET /logs/aggregate` uses, so it adds
+no per-request or per-log work anywhere on the ingest or query path.
+
+- **Enabled by default:** no.
+- **Environment variables:** `ALERT_WEBHOOK_URL` (unset by default — this is the
+  on/off switch), `ALERT_ERROR_THRESHOLD` (default `50`), `ALERT_WINDOW_MINUTES`
+  (default `5`), `ALERT_CHECK_INTERVAL_MINUTES` (default `1`).
+- **How to enable:** set `ALERT_WEBHOOK_URL` to an HTTP endpoint that accepts a
+  JSON POST — verified end-to-end against a real **Discord** Incoming Webhook
+  URL (`https://discord.com/api/webhooks/...`); works the same way with a Slack
+  Incoming Webhook, or any custom endpoint.
+- **How to disable:** leave `ALERT_WEBHOOK_URL` unset (the default) — the check
+  interval is never started at all, not merely silenced.
+- **Core-contract confirmation:** the check runs on its own `setInterval`,
+  modeled directly on the existing retention job; it never touches
+  `src/app.ts`, any controller, service, or repository, and a failed/slow
+  webhook delivery (5s timeout, one attempt, no retry) is caught and logged,
+  never allowed to affect ingestion or crash the process. A default
+  `docker compose up` with no `.env` never starts this job.
+
+Fires once on the transition into breach (`"status": "firing"`) and once when it
+clears (`"status": "resolved"`) — not once per check tick — to avoid webhook
+spam during a sustained incident:
+
+```json
+{
+  "alert": "error_threshold_exceeded",
+  "status": "firing",
+  "threshold": 50,
+  "window_minutes": 5,
+  "error_count": 73,
+  "timestamp": "2026-08-20T10:00:00.000Z",
+  "content": "🚨 Error threshold exceeded: 73 errors in the last 5m (threshold: 50)",
+  "text": "🚨 Error threshold exceeded: 73 errors in the last 5m (threshold: 50)"
+}
+```
+
+The structured fields (`alert`, `status`, `threshold`, `window_minutes`,
+`error_count`, `timestamp`) are for a custom receiver. `content` and `text` are
+there for **Discord** and **Slack** specifically — both platforms' webhook
+endpoints reject a JSON body that has neither (Discord returns `400`, since it
+requires a renderable message), so both are sent together; each platform reads
+its own field and ignores the other. Discovered by testing against a real
+Discord webhook, not assumed.
+
+**Limitation:** firing state is in-memory and resets on restart, so a restart
+during an ongoing breach can re-send a `"firing"` webhook for a condition that
+was already notified.
+
+### Live-tail
+
+`GET /logs/tail` — a `tail -f` / `kubectl logs -f` style real-time stream of
+newly ingested logs, delivered over [Server-Sent Events](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events)
+(`Content-Type: text/event-stream`), not WebSocket — the stream only ever flows
+server → client, so there's no reason for a bidirectional protocol or a new
+dependency. It supports the same `service`, `level`, `q`, and `attr.<key>`
+filters as `GET /logs`.
+
+It's push-based, not polling: `src/repositories/log.repository.ts`'s group-commit
+flush publishes each committed batch to an in-process event emitter
+(`src/liveTail.ts`) right after acknowledging the ingest request, and connected
+`/logs/tail` clients filter that stream in memory. No client ever polls the
+database under the hood, and when nobody is tailing, publishing costs a single
+no-op emit over zero listeners.
+
+- **Enabled by default:** yes — unlike Alerting, this endpoint does no work at
+  all unless a client connects to it, so there's nothing to gate behind an env
+  flag. It's bounded the same way `GET /logs`'s `limit` and
+  `GET /logs/aggregate`'s bucket count already are: by a built-in cap, not an
+  on/off switch.
+- **Environment variables:** `LIVE_TAIL_MAX_CLIENTS` (default `20`) — the
+  maximum number of concurrent `/logs/tail` connections. Past the cap, new
+  connections get `503` (`{"error": "too many live-tail connections, retry
+  later"}`), the same JSON error shape as every other failure in this API.
+- **How to disable:** set `LIVE_TAIL_MAX_CLIENTS=0` to reject all connections
+  immediately.
+- **Core-contract confirmation:** the publish call sits after the group-commit
+  flush already resolves its waiters, so it can never add latency to `POST
+  /logs`; it touches no existing endpoint's response shape, and a default
+  `docker compose up` behaves identically whether or not anything ever tails.
+
+```
+curl -N "http://localhost:8080/logs/tail?service=checkout"
+```
+
+streams one JSON object per line as matching logs are ingested:
+
+```json
+data: {"timestamp":"2026-08-20T10:00:00.123Z","level":"error","service":"checkout","message":"payment declined","attributes":{"user_id":"42"}}
+```
+
+A `: ping` comment is sent every 20s to keep the connection alive through
+proxies/timeouts that would otherwise close an idle stream.
+
+**Limitations:** streamed entries omit `id` — Postgres's `COPY` protocol (used
+by the group-commit flush) doesn't return generated identity values, and
+querying them back would cost an extra round-trip on the ingest hot path for a
+cosmetic field on an optional endpoint. There's also no history on connect —
+matching `tail -f`'s default behavior, a client only receives logs ingested
+*after* it connects; querying what came before is what `GET /logs` is for.
+Delivery is best-effort, not guaranteed: if a client can't read fast enough to
+keep up with the ingest rate, entries are dropped for that client rather than
+buffered — the alternative (queuing unboundedly) is a real memory leak that
+was found and fixed during development (a slow consumer held open during a
+heavy load test grew the process past its container memory limit and crashed
+it). A client that falls behind simply sees gaps, exactly like `tail -f`
+piped through a slow terminal.
+
 ---
 
 ## Project layout
@@ -501,7 +630,9 @@ logs.
 ```
 src/
   app.ts                Express app: middleware, routes
-  server.ts              startup: migrate → ensure partitions → retention → listen
+  server.ts              startup: migrate → ensure partitions → retention → alerting → listen
+  alerting.ts              optional webhook-on-error-threshold job (see Optional Features)
+  liveTail.ts               in-process pub/sub backing GET /logs/tail (see Optional Features)
   config/env.ts           environment variable defaults
   controllers/            HTTP layer — no query logic
   services/                orchestration between controllers and repositories
