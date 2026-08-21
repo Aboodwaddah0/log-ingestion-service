@@ -1,3 +1,4 @@
+import { retentionFloor } from "../config/env.js";
 import type { InsertLog } from "../repositories/log.repository.js";
 
 type ValidationResult =
@@ -6,7 +7,6 @@ type ValidationResult =
 
 const VALID_LEVELS = new Set(["debug", "info", "warn", "error"]);
 const FIVE_MINUTES_MS = 5 * 60 * 1000;
-const NINETY_DAYS_MS  = 90 * 24 * 60 * 60 * 1000;
 
 export function validateLog(item: unknown): ValidationResult {
     if (!item || typeof item !== "object" || Array.isArray(item)) {
@@ -26,7 +26,10 @@ export function validateLog(item: unknown): ValidationResult {
     if (ts.getTime() > Date.now() + FIVE_MINUTES_MS) {
         return { ok: false, reason: "timestamp too far in the future" };
     }
-    if (ts.getTime() < Date.now() - NINETY_DAYS_MS) {
+    // Anything older than the retention floor has no partition to land in, so
+    // rejecting it here — per entry, as a 400 — is what keeps it from failing
+    // the whole group-commit batch at COPY time as a 500.
+    if (ts.getTime() < retentionFloor().getTime()) {
         return { ok: false, reason: "timestamp too far in the past" };
     }
 

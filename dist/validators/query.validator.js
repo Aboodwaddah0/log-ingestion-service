@@ -42,6 +42,8 @@ export function validateLogQuery(query) {
 }
 const VALID_BUCKETS = new Set(["1m", "5m", "1h", "1d"]);
 const VALID_GROUP_BY = new Set(["service", "level"]);
+const BUCKET_SECONDS = { "1m": 60, "5m": 300, "1h": 3600, "1d": 86400 };
+const MAX_BUCKETS = 100_000;
 export function validateAggregateQuery(query) {
     const { since, until, bucket, group_by, service, level, q } = query;
     if (since === undefined)
@@ -58,6 +60,11 @@ export function validateAggregateQuery(query) {
         throw new AppError(400, "bucket is required");
     if (!VALID_BUCKETS.has(String(bucket)))
         throw new AppError(400, `invalid bucket: '${bucket}', must be one of 1m, 5m, 1h, 1d`);
+    const rangeMs = new Date(String(until)).getTime() - new Date(String(since)).getTime();
+    const bucketCount = rangeMs / (BUCKET_SECONDS[String(bucket)] * 1000);
+    if (bucketCount > MAX_BUCKETS) {
+        throw new AppError(400, `requested range produces too many buckets for bucket size '${bucket}' (max ${MAX_BUCKETS})`);
+    }
     if (group_by !== undefined && !VALID_GROUP_BY.has(String(group_by))) {
         throw new AppError(400, `invalid group_by: '${group_by}', must be service or level`);
     }

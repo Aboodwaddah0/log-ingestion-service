@@ -3,16 +3,42 @@ import { pipeline } from "node:stream/promises";
 import { from as copyFrom } from "pg-copy-streams";
 import { pool } from "../db/pool.js";
 import { AppError } from "../errors/AppError.js";
-// ── insert ────────────────────────────────────────────────────────────────────
-// timestamp and level are never passed here — plain ASCII, never need quoting.
+function isPoolTimeout(error) {
+    return error instanceof Error && error.message === "timeout exceeded when trying to connect";
+}
+
+function isStatementTimeout(error) {
+    return typeof error === "object" && error !== null && error.code === "57014";
+}
+
+function attrCondition(push, key, val) {
+    const keyPlaceholder = push(key);
+    const candidates = [`jsonb_build_object(${keyPlaceholder}::text, ${push(val)}::text)`];
+    if (val !== "" && !Number.isNaN(Number(val))) {
+        candidates.push(`jsonb_build_object(${keyPlaceholder}::text, ${push(val)}::numeric)`);
+    }
+    if (val === "true" || val === "false") {
+        candidates.push(`jsonb_build_object(${keyPlaceholder}::text, ${push(val)}::boolean)`);
+    }
+    return `(${candidates.map((c) => `attributes @> ${c}`).join(" OR ")})`;
+}
+const CURSOR_PATTERN = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z),(\d+)$/;
+function encodeCursor(ts, id) {
+    return Buffer.from(`${ts},${id}`, "utf8").toString("base64url");
+}
+function decodeCursor(cursor) {
+    const tryMatch = (s) => {
+        const m = CURSOR_PATTERN.exec(s);
+        return m ? { ts: m[1], id: m[2] } : null;
+    };
+    return tryMatch(Buffer.from(cursor, "base64url").toString("utf8")) ?? tryMatch(cursor);
+}
 function csvField(s) {
     if (s.includes('"') || s.includes(',') || s.includes('\n') || s.includes('\r')) {
         return '"' + s.replace(/"/g, '""') + '"';
     }
     return s;
 }
-// Flush accumulated rows to the stream in ~64 KB chunks instead of one yield
-// per row, which cuts stream-write overhead by ~100× for a 5,000-row batch.
 const CHUNK_SIZE = 65536;
 function* logsToCsvChunks(logs) {
     let buf = "";
@@ -30,12 +56,6 @@ function* logsToCsvChunks(logs) {
     }
     if (buf.length > 0)
         yield buf;
-}
-// pg-pool throws this exact plain Error when connectionTimeoutMillis elapses
-// waiting for a free connection (node_modules/pg-pool/index.js) — the pool is
-// genuinely saturated, not a bug, so it should surface as a retryable 503.
-function isPoolTimeout(error) {
-    return error instanceof Error && error.message === "timeout exceeded when trying to connect";
 }
 function computeRollupDeltas(logs) {
     const deltas = new Map();
@@ -56,42 +76,24 @@ function computeRollupDeltas(logs) {
 async function upsertRollup(client, deltas) {
     if (deltas.length === 0)
         return;
-    // Concurrent batches touching overlapping (bucket, service, level) rows must
-    // lock them in the same order, or Postgres can deadlock two transactions
-    // waiting on each other's rows. Sorting gives every concurrent upsert the
-    // same lock-acquisition order.
-    const sorted = [...deltas].sort((a, b) => a.bucket_start < b.bucket_start ? -1 : a.bucket_start > b.bucket_start ? 1 :
-        a.service < b.service ? -1 : a.service > b.service ? 1 :
-            a.level < b.level ? -1 : a.level > b.level ? 1 : 0);
     const values = [];
-    const placeholders = sorted
-        .map((d) => {
-        const base = values.length;
-        values.push(d.bucket_start, d.service, d.level, d.count);
-        return `($${base + 1}::timestamptz, $${base + 2}, $${base + 3}, $${base + 4}::bigint)`;
+    const placeholders = deltas
+        .map((delta) => {
+        const i = values.length;
+        values.push(delta.bucket_start, delta.service, delta.level, delta.count);
+        return `($${i + 1}::timestamptz, $${i + 2}, $${i + 3}, $${i + 4}::bigint)`;
     })
         .join(", ");
-    await client.query(`INSERT INTO logs_agg_1m (bucket_start, service, level, count)
-     VALUES ${placeholders}
-     ON CONFLICT (bucket_start, service, level)
-     DO UPDATE SET count = logs_agg_1m.count + EXCLUDED.count`, values);
+    await client.query(`
+      INSERT INTO logs_agg_1m
+        (bucket_start, service, level, count)
+      VALUES ${placeholders}
+      ON CONFLICT (bucket_start, service, level)
+      DO UPDATE SET
+        count = logs_agg_1m.count + EXCLUDED.count
+    `, values);
 }
-// ── group commit ─────────────────────────────────────────────────────────────
-// The load generator sends many small concurrent batches (~30 rows each) rather
-// than few large ones. Running one COPY + one rollup upsert per HTTP request pays
-// fixed per-request overhead (COPY protocol setup, transaction commit/fsync) that
-// dominates at that size. Concurrent requests are coalesced instead: a request's
-// rows join a shared pending set, and if a flush is already running they ride the
-// *next* one rather than starting their own. This adapts to load automatically —
-// idle periods flush immediately (no added latency), busy periods sweep whatever
-// accumulated into one large COPY — with no fixed timer or batch-size tuning.
-//
-// A caller's insertLogs() promise only resolves once the flush that actually
-// contains its rows has committed (or rejects if that flush fails), so
-// read-after-write and per-request error propagation are unchanged from the
-// one-COPY-per-request version — this only changes how many requests share a
-// single database round trip, not what each request is guaranteed.
-const MAX_PENDING_ROWS = 50_000; // bounds memory under the 256 MB app limit
+const MAX_PENDING_ROWS = 50_000;
 let pendingLogs = [];
 let pendingWaiters = [];
 let pendingRowCount = 0;
@@ -110,11 +112,6 @@ async function flushBatch(logs) {
     }
     try {
         await client.query("BEGIN");
-        // Scoped to this transaction only (SET LOCAL) — queries, migrations, and
-        // the retention job all keep full durability. logs stays the source of
-        // truth; the only relaxed guarantee is losing up to ~200ms of already-
-        // acknowledged writes if the Postgres *process* itself crashes (not the
-        // app, not a dropped connection — those still fail the request normally).
         await client.query("SET LOCAL synchronous_commit = off");
         const copyStream = client.query(copyFrom("COPY logs (timestamp, level, service, message, attributes) FROM STDIN WITH (FORMAT csv)"));
         await pipeline(Readable.from(logsToCsvChunks(logs)), copyStream);
@@ -161,8 +158,6 @@ export async function insertLogs(logs) {
         pendingWaiters.push({ resolve, reject });
         pendingRowCount += logs.length;
     });
-    // No await happens between this check and `flushing = true` inside
-    // runFlush, so this can't double-start under concurrent requests.
     if (!flushing) {
         void runFlush();
     }
@@ -193,23 +188,23 @@ export async function getLogs(params) {
     }
     if (params.attrs) {
         for (const [key, val] of Object.entries(params.attrs)) {
-            conditions.push(`attributes->>${push(key)} = ${push(val)}`);
+            conditions.push(attrCondition(push, key, val));
         }
     }
     if (params.cursor) {
-        const parts = params.cursor.split(",");
-        const [ts, id] = parts;
-        if (parts.length !== 2 || !ts || !id || isNaN(new Date(ts).getTime()) || !/^\d+$/.test(id)) {
+        const parsed = decodeCursor(params.cursor);
+        if (!parsed) {
             throw new AppError(400, "invalid or malformed cursor");
         }
-        conditions.push(`(timestamp, id) < (${push(ts)}::timestamptz, ${push(id)}::bigint)`);
+        conditions.push(`(timestamp, id) < (${push(parsed.ts)}::timestamptz, ${push(parsed.id)}::bigint)`);
     }
     const limit = params.limit ?? 100;
     const where = conditions.length
         ? `WHERE ${conditions.join(" AND ")}`
         : "";
     try {
-        const result = await pool.query(`SELECT id, timestamp, level, service, message, attributes
+        const result = await pool.query(`SELECT id, timestamp, level, service, message, attributes,
+              to_char(timestamp AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_ts
        FROM logs
        ${where}
        ORDER BY timestamp DESC, id DESC
@@ -221,7 +216,7 @@ export async function getLogs(params) {
         }
         const last = rows[rows.length - 1];
         const next_cursor = hasMore && last
-            ? `${last.timestamp.toISOString()},${last.id}`
+            ? encodeCursor(last.cursor_ts, last.id)
             : null;
         return {
             logs: rows.map((r) => ({
@@ -239,7 +234,7 @@ export async function getLogs(params) {
         if (error instanceof AppError) {
             throw error;
         }
-        if (isPoolTimeout(error)) {
+        if (isPoolTimeout(error) || isStatementTimeout(error)) {
             throw new AppError(503, "database overloaded, retry later");
         }
         console.error("GET logs failed:", error);
@@ -254,8 +249,6 @@ const BUCKET_SECONDS = {
     "1d": 86400,
 };
 export async function aggregateLogs(params) {
-    // The rollup has no attribute/message data, so attr- or q-filtered aggregates
-    // must fall back to scanning raw logs — everything else can use it.
     if (params.attrs || params.q) {
         return aggregateFromScan(params);
     }
@@ -275,11 +268,8 @@ async function aggregateFromRollup(params) {
     if (params.level)
         conditions.push(`level = ${push(params.level)}`);
     const where = `WHERE ${conditions.join(" AND ")}`;
-    // bucketSec is always one of {60,300,3600,86400}, all multiples of the
-    // rollup's 1m granularity — safe to inline and always re-buckets cleanly.
     const bucketSec = BUCKET_SECONDS[params.bucket];
     const bucketExpr = `to_timestamp(floor(extract(epoch from bucket_start) / ${bucketSec}) * ${bucketSec})`;
-    // group_by is always "service" or "level" (validated) — safe to inline as column name
     const groupSelect = params.group_by ? `${params.group_by} AS group` : `NULL::text AS group`;
     const groupBy = params.group_by ? `1, 2` : `1`;
     const sql = `
@@ -303,7 +293,7 @@ async function aggregateFromRollup(params) {
         };
     }
     catch (error) {
-        if (isPoolTimeout(error)) {
+        if (isPoolTimeout(error) || isStatementTimeout(error)) {
             throw new AppError(503, "database overloaded, retry later");
         }
         console.error("aggregate (rollup) failed:", error);
@@ -327,14 +317,12 @@ async function aggregateFromScan(params) {
         conditions.push(`message ILIKE ${push(`%${params.q}%`)}`);
     if (params.attrs) {
         for (const [key, val] of Object.entries(params.attrs)) {
-            conditions.push(`attributes->>${push(key)} = ${push(val)}`);
+            conditions.push(attrCondition(push, key, val));
         }
     }
     const where = `WHERE ${conditions.join(" AND ")}`;
-    // bucketSec is always one of {60,300,3600,86400} — safe to inline
     const bucketSec = BUCKET_SECONDS[params.bucket];
     const bucketExpr = `to_timestamp(floor(extract(epoch from timestamp) / ${bucketSec}) * ${bucketSec})`;
-    // group_by is always "service" or "level" (validated) — safe to inline as column name
     const groupSelect = params.group_by ? `${params.group_by} AS group` : `NULL::text AS group`;
     const groupBy = params.group_by ? `1, 2` : `1`;
     const sql = `
@@ -358,7 +346,7 @@ async function aggregateFromScan(params) {
         };
     }
     catch (error) {
-        if (isPoolTimeout(error)) {
+        if (isPoolTimeout(error) || isStatementTimeout(error)) {
             throw new AppError(503, "database overloaded, retry later");
         }
         console.error("aggregate failed:", error);

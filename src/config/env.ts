@@ -22,3 +22,19 @@ export const env = {
   // and the app container only has 0.5 of a core.
   COMPRESSION_ENABLED: process.env.COMPRESSION_ENABLED === "true",
 };
+
+// The oldest timestamp the service can actually store. `logs` is partitioned by
+// month and retention drops any partition ending at or before the cutoff, so the
+// floor is the start of the month *containing* the cutoff — the oldest month
+// that survives a retention pass.
+//
+// Validation and partition creation both derive from this, deliberately: if the
+// validator accepted anything older, the row would pass validation and then hit
+// "no partition of relation" at COPY time, failing the entire group-commit batch
+// (including other clients' valid logs). If partition creation went any older,
+// retention would drop those partitions and the next cycle would recreate them,
+// forever.
+export function retentionFloor(now: Date = new Date()): Date {
+  const cutoff = new Date(now.getTime() - env.RETENTION_DAYS * 24 * 60 * 60 * 1000);
+  return new Date(Date.UTC(cutoff.getUTCFullYear(), cutoff.getUTCMonth(), 1));
+}

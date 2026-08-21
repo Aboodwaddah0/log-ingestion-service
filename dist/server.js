@@ -1,4 +1,5 @@
 import app from "./app.js";
+import { startAlertingJob } from "./alerting.js";
 import { env } from "./config/env.js";
 import { runMigrations } from "./db/migrate.js";
 import { pool } from "./db/pool.js";
@@ -9,6 +10,9 @@ async function startup() {
     await runMigrations();
     await ensurePartitions();
     startRetentionJob();
+    if (env.ALERT_WEBHOOK_URL) {
+        startAlertingJob();
+    }
     app.listen(env.PORT, "0.0.0.0", () => {
         console.log(`Server listening on port ${env.PORT}`);
     });

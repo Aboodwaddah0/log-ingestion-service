@@ -1,32 +1,32 @@
 import { pool } from "./pool.js";
-import { env } from "../config/env.js";
+import { env, retentionFloor } from "../config/env.js";
 
-// Partition names are computed from our own year/month integers — never from
-// user input — so inlining them into SQL is safe.
+
 function partitionName(year: number, month: number): string {
   return `logs_${year}_${String(month + 1).padStart(2, "0")}`;
 }
 
 async function createMonthPartition(year: number, month: number): Promise<void> {
-  // Use Date.UTC so partition bounds are always UTC midnight, matching how
-  // TIMESTAMPTZ is stored — local-time new Date() would be offset on non-UTC hosts.
   const start = new Date(Date.UTC(year, month, 1)).toISOString();
   const end   = new Date(Date.UTC(year, month + 1, 1)).toISOString();
   const name  = partitionName(year, month);
 
-  // DDL does not support bind parameters — values are inlined.
-  // start/end come from Date.UTC() with integer inputs, never from user input.
+  
   await pool.query(
     `CREATE TABLE IF NOT EXISTS ${name} PARTITION OF logs
      FOR VALUES FROM ('${start}') TO ('${end}')`
   );
 }
 
+
 export async function ensurePartitions(): Promise<void> {
   const now = new Date();
-  for (let i = 0; i <= 2; i++) {
-    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + i, 1));
+  const last = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 2, 1));
+
+  let d = retentionFloor(now);
+  while (d <= last) {
     await createMonthPartition(d.getUTCFullYear(), d.getUTCMonth());
+    d = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1));
   }
 }
 
@@ -60,9 +60,7 @@ export async function dropExpiredPartitions(): Promise<number> {
   return dropped;
 }
 
-// logs_agg_1m isn't partitioned (it's tiny relative to logs — bounded by
-// minutes × services × levels, not raw log count), so it needs its own
-// row-level cleanup instead of the partition-drop path above.
+
 async function dropExpiredRollupRows(): Promise<number> {
   const cutoff = new Date(Date.now() - env.RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
   const result = await pool.query(`DELETE FROM logs_agg_1m WHERE bucket_start < $1::timestamptz`, [cutoff]);
