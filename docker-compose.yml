@@ -14,6 +14,7 @@ services:
       ALERT_ERROR_THRESHOLD: ${ALERT_ERROR_THRESHOLD:-50}
       ALERT_WINDOW_MINUTES: ${ALERT_WINDOW_MINUTES:-5}
       ALERT_CHECK_INTERVAL_MINUTES: ${ALERT_CHECK_INTERVAL_MINUTES:-1}
+      COMPRESSION_ENABLED: ${COMPRESSION_ENABLED:-false}
     depends_on:
       postgres:
         condition: service_healthy

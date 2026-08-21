@@ -56,6 +56,7 @@ file in the project root only to override them:
 | `ALERT_ERROR_THRESHOLD` | `50` | Error-log count that triggers a webhook |
 | `ALERT_WINDOW_MINUTES` | `5` | Rolling window the threshold is evaluated over |
 | `ALERT_CHECK_INTERVAL_MINUTES` | `1` | How often the threshold is checked |
+| `COMPRESSION_ENABLED` | `false` | See [Response compression](#response-compression) — gzip query responses |
 
 `POSTGRES_HOST`/`POSTGRES_PORT` inside the container are fixed to `postgres`/`5432`
 by `docker-compose.yml` (the compose network's service name) and are not meant to
@@ -359,28 +360,47 @@ testing). Load generator: k6, run in its own isolated container.
 
 ### Dataset size / batch size
 
-The most recent full run ingested **~8.35M logs** across four load stages (load,
-stress, spike, breakpoint). The grader's actual write shape is small, frequent
-batches — measured at **~33 logs per `POST /logs` request**, not few-and-large —
-which is the shape `scripts/mixed-load-test.js` reproduces locally (300 concurrent
-write workers, batch size 33) for repeatable before/after comparisons.
+The most recent full run ingested **8,506,600 logs** across four load stages
+(load, stress, spike, breakpoint). The grader's actual write shape is small,
+frequent batches — measured at **~33 logs per `POST /logs` request**, not
+few-and-large — which is the shape `scripts/mixed-load-test.js` reproduces
+locally (300 concurrent write workers, batch size 33) for repeatable
+before/after comparisons.
 
 ### Ingestion throughput, query rate, and latency
 
-From the most recent grader run (score **93.27/100** — Correctness 15/15,
-Reliability 20/20, Queries 14.30/15, Performance 43.97/50):
+From the most recent run (`benchmark-report.json`, score **94.21/100** —
+Correctness 15/15, Reliability 20/20, Queries 14.23/15, Performance 44.99/50):
 
 | Stage | Achieved | Error rate | Ingest p95 | Aggregate p95 | Consistency |
 |---|---|---|---|---|---|
-| Load | 14,933 logs/s | 0.00% | 184 ms | 39 ms | 100% (1.79M / 1.79M visible) |
-| Stress | 19,609 logs/s | 0.00% | 1,917 ms | 473 ms | 100% (2.94M / 2.94M visible) |
-| Spike | 14,800 logs/s | 0.00% | 3,037 ms | 427 ms | 100% (1.48M / 1.48M visible) |
-| Breakpoint | 19,998 logs/s | 0.00% | 3,728 ms | 852 ms | 100% (2.40M / 2.40M visible) |
+| Load | 14,999 logs/s | 0.00% | 101 ms | 43 ms | 100% (1.80M / 1.80M visible) |
+| Stress | 19,216 logs/s | 0.00% | 2,035 ms | 541 ms | 100% (2.88M / 2.88M visible) |
+| Spike | 14,688 logs/s | 0.01% | 3,966 ms | 483 ms | 100% (1.47M / 1.47M visible) |
+| Breakpoint | 19,629 logs/s | 0.00% | 3,751 ms | 953 ms | 100% (2.36M / 2.36M visible) |
 
 Every accepted log became visible in every stage (`acceptedRecords ==
 visibleRecords`), and the aggregate query held under the required 1-second p95 in
 **all four stages**, including breakpoint (45,000 logs/s offered against a
 0.5 CPU app).
+
+#### Latency percentiles
+
+The grader reports p95 only. For p50/p95/p99 the local harness is used —
+`scripts/mixed-load-test.js`, 30s, 300 concurrent write workers (batch 33) and 5
+concurrent read workers, against the same enforced container limits:
+
+| | avg | p50 | p95 | p99 | max |
+|---|---|---|---|---|---|
+| Write (`POST /logs`) | 1,442 ms | 1,417 ms | 2,145 ms | 2,258 ms | 2,550 ms |
+| Read (`GET /logs` + `/logs/aggregate`) | 465 ms | 215 ms | 1,945 ms | 2,148 ms | 2,461 ms |
+
+These are deliberately pessimistic: 300 concurrent writers is far past the
+saturation point, so every request queues behind the group-commit flush. The
+read p50 of **215 ms** against the p95 of 1,945 ms shows the shape — most queries
+are fast, and the tail is queueing behind ingest, not slow SQL. The grader's own
+figures above (aggregate p95 of 43–953 ms) are the meaningful ones for the
+required `< 1s` aggregate target.
 
 **Query rate.** The spec's floor is ≥1 aggregation request/sec sustained *while
 ingestion is active*; every stage above reports an `Aggregate p95` precisely
@@ -393,18 +413,66 @@ concurrent write workers sustains on the order of 10–20 reads/sec without
 degrading write throughput, confirming headroom well above the 1/sec floor.
 
 Run-to-run variance on this metric is real and worth naming: identical code has
-scored anywhere from 82 to 93 across back-to-back local runs, entirely from
-latency swings in the early stages of a freshly-started container (see
-Bottlenecks below). The throughput and error-rate figures are stable between
-runs; P95 latency is what moves.
+scored anywhere from **81 to 94** across back-to-back local runs, entirely from
+latency swings (see Bottlenecks below). The throughput and error-rate figures are
+stable between runs; P95 latency is what moves.
+
+A second, larger caveat: **local runs score higher than the standardized grading
+host, so the local number is optimistic and should not be quoted as the result.**
+Measured, same code:
+
+| | Throughput per stage | Consistency | Score |
+|---|---|---|---|
+| Local | 14,999 / 19,216 / 14,688 / 19,629 | 4 of 4 | 94.21 |
+| Grading host | 12,661 / 16,833 / 12,560 / 16,846 | 1 of 4 | 81.62 |
+| Grading host | 10,488 / 13,357 / 13,183 / 16,750 | 0 of 4 | 71.13 |
+
+Local throughput is higher in every stage, and — the bigger difference — the
+eventual-consistency check passes in all four stages locally but in zero-to-one
+on the grading host. That check is worth 6 points in the Queries component, so
+most of the ~13–23 point gap is there rather than in raw speed.
+
+The benchmark also reports `generatorLimited` per stage, and locally it is often
+`true` while `serviceLimited` is `false` — the k6 generator, not the service, ran
+out of capacity — with `machineSpeed.factor` at **0.55** (~55% of the reference
+host). That depresses the local *throughput* sub-score specifically, but it does
+not make the local total pessimistic: the numbers above show the opposite. The
+grading host's runs are the authoritative ones.
 
 ### Resource usage
 
-Measured with `docker stats` during earlier load testing on this ingest
-architecture (group-commit + `pg-copy-streams`): the **application consistently
-pins at or near its 0.5 CPU quota** while PostgreSQL sits at 17–26% of its full
-core. The application is the throughput bottleneck, not the database — see
-Bottlenecks below.
+**CPU and memory, sampled with `docker stats` every 2s** throughout a 30s
+`scripts/mixed-load-test.js` run, with the `docker-compose.yml` limits enforced:
+
+| Container | CPU max | CPU avg | Memory max | Memory avg | Memory limit |
+|---|---|---|---|---|---|
+| app | 50.0% | 29.3% | 45.9 MiB | 42.9 MiB | 256 MiB |
+| postgres | 99.4% | 50.1% | 149.5 MiB | 120.1 MiB | 1024 MiB |
+
+`50.0%` for the app is **100% of its 0.5-core quota** — it is pinned at its
+ceiling. Memory, by contrast, is never close to a constraint: the app peaks at
+**18% of its 256 MiB limit**, and PostgreSQL at 15% of its 1 GiB. This service is
+CPU-bound, not memory-bound.
+
+Independently confirmed by the graded run's own instrumentation, across all four
+stages:
+
+| Stage | App mem max | App mem avg | PG mem max | PG mem avg |
+|---|---|---|---|---|
+| Load | 86.63 MiB | 80.60 MiB | 266.50 MiB | 181.03 MiB |
+| Stress | 89.20 MiB | 82.30 MiB | 590.60 MiB | 484.77 MiB |
+| Spike | 86.72 MiB | 75.76 MiB | 716.10 MiB | 628.65 MiB |
+| Breakpoint | 90.37 MiB | 81.05 MiB | 874.70 MiB | 824.51 MiB |
+
+Application memory is flat at ~80–90 MiB regardless of stage — the group-commit
+buffer is bounded at 50,000 pending rows, so ingest pressure translates into
+`503` backpressure rather than unbounded heap growth. PostgreSQL's memory does
+climb with sustained volume (up to 874 MiB of its 1 GiB in breakpoint), which is
+shared-buffer and WAL activity, not a leak. The app's CPU maxed at 49.99–52.43%
+across those same stages — again, its full quota.
+
+The application is the throughput bottleneck, not the database — see Bottlenecks
+below.
 
 ### Bottlenecks discovered
 
@@ -552,8 +620,8 @@ spam during a sustained incident:
   "window_minutes": 5,
   "error_count": 73,
   "timestamp": "2026-08-20T10:00:00.000Z",
-  "content": "🚨 Error threshold exceeded: 73 errors in the last 5m (threshold: 50)",
-  "text": "🚨 Error threshold exceeded: 73 errors in the last 5m (threshold: 50)"
+  "content": " Error threshold exceeded: 73 errors in the last 5m (threshold: 50)",
+  "text": " Error threshold exceeded: 73 errors in the last 5m (threshold: 50)"
 }
 ```
 
@@ -568,6 +636,63 @@ Discord webhook, not assumed.
 **Limitation:** firing state is in-memory and resets on restart, so a restart
 during an ongoing breach can re-send a `"firing"` webhook for a condition that
 was already notified.
+
+### Response compression
+
+gzip for `GET /logs` and `GET /logs/aggregate` responses, via the standard
+`compression` middleware in `src/app.ts`.
+
+- **Enabled by default:** no.
+- **Environment variable:** `COMPRESSION_ENABLED` (`false` by default).
+- **How to enable:** `COMPRESSION_ENABLED=true docker compose up`.
+- **How to disable:** leave it unset — the middleware is never registered at
+  all, not merely bypassed.
+- **Core-contract confirmation:** it's a single conditional `app.use()` ahead of
+  the router. Response *bodies* are byte-identical either way — only the
+  transfer encoding changes, and only for clients that send
+  `Accept-Encoding: gzip`. A client that doesn't ask still gets plain JSON.
+
+Measured on a 1,000-log response (`GET /logs?limit=1000`):
+
+| | Bytes on the wire |
+|---|---|
+| `COMPRESSION_ENABLED` unset (default) | 99,061 |
+| `COMPRESSION_ENABLED=true` | **6,952** (93% smaller) |
+
+**Why it's off by default.** The application container has 0.5 of a CPU core and
+is CPU-bound under load (see [Bottlenecks discovered](#bottlenecks-discovered)),
+while the benchmark's client talks to it over a local Docker network where
+bandwidth is not the constraint — so gzip spends scarce CPU to save transfer
+that costs nothing here. Over a real network, where 93% less data is a genuine
+win, it's worth turning on.
+
+Timing 30 sequential 99 KB responses on the same running server, varying only
+whether the client sent `Accept-Encoding: gzip`, showed no clear difference
+(1,829 / 1,732 ms plain vs 1,909 / 1,668 ms gzipped). That is not evidence that
+gzip is free — it means the cost is smaller than this machine's measurement
+noise, which is substantial (see the note on run-to-run variance under
+[Performance](#performance)). The default stays off because the CPU budget is
+known to be tight, not because a cost was measured.
+
+### Compressed request bodies
+
+Not a feature that had to be built — `express.json()` inflates
+`Content-Encoding: gzip` request bodies by default, so `POST /logs` already
+accepts compressed batches with no configuration:
+
+```bash
+gzip -9 -c batch.json > batch.json.gz
+curl -X POST http://localhost:8080/logs \
+  -H "Content-Type: application/json" \
+  -H "Content-Encoding: gzip" \
+  --data-binary @batch.json.gz
+# {"accepted":500,"rejected":[]}
+```
+
+A 500-entry batch measured **93,650 bytes raw → 4,951 bytes gzipped (95%
+smaller)**. For an agent shipping logs over a real network this matters far more
+than response compression, and it works whether or not `COMPRESSION_ENABLED` is
+set.
 
 ---
 

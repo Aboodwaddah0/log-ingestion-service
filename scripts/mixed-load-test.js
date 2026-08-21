@@ -191,10 +191,10 @@ async function main() {
 
   console.log("-------------------------------------------");
   console.log(`  Write throughput : ${(writeStats.sent / seconds).toFixed(0)} logs/sec  (${writeStats.sent} sent, ${writeStats.errors} failed batches)`);
-  console.log(`  Write latency ms : avg ${(writeLatencies.reduce((a, b) => a + b, 0) / (writeLatencies.length || 1)).toFixed(0)}  p95 ${percentile(writeLatencies, 95)}  max ${Math.max(0, ...writeLatencies)}`);
+  console.log(`  Write latency ms : avg ${(writeLatencies.reduce((a, b) => a + b, 0) / (writeLatencies.length || 1)).toFixed(0)}  p50 ${percentile(writeLatencies, 50)}  p95 ${percentile(writeLatencies, 95)}  p99 ${percentile(writeLatencies, 99)}  max ${Math.max(0, ...writeLatencies)}`);
   if (writeStats.errorSamples.length) console.log(`  Write errors      : ${writeStats.errorSamples.join(" | ")}`);
   console.log(`  Read requests    : ${readStats.ok} ok, ${readStats.errors} failed`);
-  console.log(`  Read latency ms  : avg ${(readStats.latencies.reduce((a, b) => a + b, 0) / (readStats.latencies.length || 1)).toFixed(0)}  p95 ${percentile(readStats.latencies, 95).toFixed?.(0) ?? "n/a"}  max ${Math.max(0, ...readStats.latencies)}`);
+  console.log(`  Read latency ms  : avg ${(readStats.latencies.reduce((a, b) => a + b, 0) / (readStats.latencies.length || 1)).toFixed(0)}  p50 ${percentile(readStats.latencies, 50)}  p95 ${percentile(readStats.latencies, 95)}  p99 ${percentile(readStats.latencies, 99)}  max ${Math.max(0, ...readStats.latencies)}`);
   if (readStats.errorSamples.length) console.log(`  Read errors       : ${readStats.errorSamples.join(" | ")}`);
   console.log("-------------------------------------------");
   console.log("  Postgres active-session wait events (top 10, sampled every 500ms):");

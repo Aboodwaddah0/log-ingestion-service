@@ -17,4 +17,8 @@ export const env = {
   ALERT_ERROR_THRESHOLD: Number(process.env.ALERT_ERROR_THRESHOLD) || 50,
   ALERT_WINDOW_MINUTES: Number(process.env.ALERT_WINDOW_MINUTES) || 5,
   ALERT_CHECK_INTERVAL_MINUTES: Number(process.env.ALERT_CHECK_INTERVAL_MINUTES) || 1,
+
+  // Off unless explicitly set to "true" — gzip costs CPU on every response,
+  // and the app container only has 0.5 of a core.
+  COMPRESSION_ENABLED: process.env.COMPRESSION_ENABLED === "true",
 };
