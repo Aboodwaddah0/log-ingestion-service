@@ -775,4 +775,5 @@ src/
   db/migrations/                 numbered, applied in order, tracked in schema_migrations
 dashboard/                 separate React + TypeScript app (see Optional Features)
 scripts/                   load-test harnesses used for the measurements above
+  seed-demo.js               generates realistic sample data for a demo/walkthrough
 ```
