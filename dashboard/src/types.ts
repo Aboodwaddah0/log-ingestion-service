@@ -14,10 +14,6 @@ export interface LogsResponse {
   next_cursor: string | null;
 }
 
-// GET /logs/tail streams the same shape as LogEntry minus `id` — the ingest
-// path uses Postgres COPY, which never returns generated identity values.
-export type LiveLogEntry = Omit<LogEntry, "id">;
-
 export interface AggregateBucket {
   start: string;
   group: string | null;

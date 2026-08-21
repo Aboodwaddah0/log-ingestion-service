@@ -17,6 +17,4 @@ export const env = {
   ALERT_ERROR_THRESHOLD: Number(process.env.ALERT_ERROR_THRESHOLD) || 50,
   ALERT_WINDOW_MINUTES: Number(process.env.ALERT_WINDOW_MINUTES) || 5,
   ALERT_CHECK_INTERVAL_MINUTES: Number(process.env.ALERT_CHECK_INTERVAL_MINUTES) || 1,
-
-  LIVE_TAIL_MAX_CLIENTS: Number(process.env.LIVE_TAIL_MAX_CLIENTS) || 20,
 };

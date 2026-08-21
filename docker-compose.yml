@@ -14,7 +14,6 @@ services:
       ALERT_ERROR_THRESHOLD: ${ALERT_ERROR_THRESHOLD:-50}
       ALERT_WINDOW_MINUTES: ${ALERT_WINDOW_MINUTES:-5}
       ALERT_CHECK_INTERVAL_MINUTES: ${ALERT_CHECK_INTERVAL_MINUTES:-1}
-      LIVE_TAIL_MAX_CLIENTS: ${LIVE_TAIL_MAX_CLIENTS:-20}
     depends_on:
       postgres:
         condition: service_healthy

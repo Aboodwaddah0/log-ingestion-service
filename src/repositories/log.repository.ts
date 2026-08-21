@@ -4,7 +4,6 @@ import { from as copyFrom } from "pg-copy-streams";
 import type { PoolClient } from "pg";
 import { pool } from "../db/pool.js";
 import { AppError } from "../errors/AppError.js";
-import { publishToTail } from "../liveTail.js";
 
 
 export interface InsertLog {
@@ -227,7 +226,6 @@ async function runFlush(): Promise<void> {
     try {
       await flushBatch(logs);
       for (const w of waiters) w.resolve();
-      publishToTail(logs);
     } catch (error) {
       for (const w of waiters) w.reject(error);
     }

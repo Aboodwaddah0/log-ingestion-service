@@ -1,4 +1,4 @@
-import { apiGet, BASE_URL } from "./client";
+import { apiGet } from "./client";
 import { toIso } from "../lib/datetime";
 import type {
   AggregateResponse,
@@ -46,19 +46,4 @@ export function fetchAggregate(
     bucket,
     group_by: groupBy || undefined,
   });
-}
-
-// GET /logs/tail ignores since/until/limit/cursor (meaningless for a push
-// stream), so this only carries the filters it actually reads. EventSource
-// takes a plain URL rather than going through apiGet/fetch.
-export function buildTailUrl(filters: Pick<SharedFilters, "service" | "level" | "q" | "attrs">): string {
-  const params = new URLSearchParams();
-  if (filters.service) params.set("service", filters.service);
-  if (filters.level) params.set("level", filters.level);
-  if (filters.q) params.set("q", filters.q);
-  for (const { key, value } of filters.attrs) {
-    if (key) params.set(`attr.${key}`, value);
-  }
-  const query = params.toString();
-  return `${BASE_URL}/logs/tail${query ? `?${query}` : ""}`;
 }

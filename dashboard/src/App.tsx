@@ -1,12 +1,10 @@
 import { useEffect, useState } from "react";
 import { AggregateChart } from "./components/AggregateChart";
 import { FilterBar } from "./components/FilterBar";
-import { LiveTail } from "./components/LiveTail";
 import { LogTable } from "./components/LogTable";
 import { StatStrip } from "./components/StatStrip";
 import { useAggregate } from "./hooks/useAggregate";
 import { useLevelSummary } from "./hooks/useLevelSummary";
-import { useLiveTail } from "./hooks/useLiveTail";
 import { useLogs } from "./hooks/useLogs";
 import { suggestBucket } from "./lib/bucket";
 import { toLocalInputValue } from "./lib/datetime";
@@ -35,9 +33,6 @@ export default function App() {
   const { logs, nextCursor, loading: logsLoading, error: logsError, loadMore } = useLogs(filters);
   const { buckets, loading: aggLoading, error: aggError } = useAggregate(filters, bucket, groupBy);
   const { summary, loading: summaryLoading } = useLevelSummary(filters);
-
-  const [liveTailEnabled, setLiveTailEnabled] = useState(false);
-  const { entries: tailEntries, status: tailStatus, clear: clearTail } = useLiveTail(filters, liveTailEnabled);
 
   // A fixed default bucket looks like noise on a wide range (1,440 near-empty
   // 1m buckets over 24h), and grouping makes the same bucket worse (5 sparse
@@ -103,17 +98,6 @@ export default function App() {
           error={logsError}
           hasMore={nextCursor !== null}
           onLoadMore={loadMore}
-        />
-      </section>
-
-      <section className="panel">
-        <h2>Live Tail</h2>
-        <LiveTail
-          entries={tailEntries}
-          status={tailStatus}
-          enabled={liveTailEnabled}
-          onToggle={() => setLiveTailEnabled((v) => !v)}
-          onClear={clearTail}
         />
       </section>
     </div>
