@@ -458,6 +458,19 @@ Bottlenecks below.
   `Date`'s millisecond precision while Postgres stores microseconds — a
   sub-millisecond-precision timestamp could silently skip rows. Fixed by
   round-tripping the raw Postgres text representation instead of a parsed `Date`.
+- **Compiled production build.** The image is now multi-stage: it compiles with
+  `tsc` in a build stage and runs `node dist/server.js`, instead of the previous
+  `npm run dev` (`tsx watch`), which transpiled on every import and kept a file
+  watcher alive inside the 256 MB / 0.5 CPU container. Because migrations are
+  read at runtime relative to the compiled file location, the build stage copies
+  `src/db/migrations/*.sql` into `dist/db/migrations` explicitly — `tsc` emits
+  `.js` only, so without that step startup fails with `ENOENT`.
+- **A `.dockerignore`.** The build context previously had none, so `COPY . .`
+  shipped `node_modules` (installed on the host, for the wrong platform, merged
+  over the image's own), `dashboard/`, `test-result/`, and — most importantly —
+  `.env`, baking configuration and secrets into the image. `docker compose` still
+  reads `.env` on the *host* for `${VAR}` substitution, so local configuration is
+  unaffected; the values are injected at runtime rather than built in.
 
 ---
 
@@ -465,13 +478,6 @@ Bottlenecks below.
 
 Documented honestly, including things that were tried and reverted:
 
-- **The application is not run from a compiled production build.** `Dockerfile`'s
-  `CMD` is `npm run dev` (`tsx watch`), which transpiles on every import and keeps
-  a file watcher alive inside the 256 MB / 0.5 CPU container. `npm run build` and
-  `npm start` (running compiled `dist/`) already exist as scripts and are not
-  currently wired into the image. This is the most likely remaining lever on the
-  CPU-bound bottleneck above, and it was identified but not yet applied in this
-  round of work.
 - **`q=` message search is an unindexed sequential scan.** A trigram index was
   built, measured, and reverted because its ingest cost (~3× throughput) outweighed
   the benefit for a filter the grader's traffic doesn't exercise. It is correct,

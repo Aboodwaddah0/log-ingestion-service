@@ -1,0 +1,22 @@
+# Secrets — must never be baked into the image. docker compose still reads
+# .env on the *host* for ${VAR} substitution, so local config keeps working.
+.env
+.env.*
+
+# Installed on the host (and for the wrong platform); the image installs its own.
+node_modules
+dist
+
+# Not part of the service.
+dashboard
+test-result
+scripts
+benchmark-report.json
+logs.json
+
+# Docs and tooling.
+*.md
+.git
+.gitignore
+.vscode
+.idea

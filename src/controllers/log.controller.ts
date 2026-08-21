@@ -38,11 +38,7 @@ export async function tailLogsHandler(req: Request, res: Response) {
   res.setHeader("Connection", "keep-alive");
   res.flushHeaders();
 
-  // A slow/stalled consumer must never make this buffer unboundedly: if
-  // res.write() reports backpressure, drop writes until 'drain' instead of
-  // queuing them. Live-tail is best-effort delivery, like `tail -f` — it's
-  // fine to skip entries under load, it is not fine to grow the heap without
-  // bound because one client can't keep up with the ingest rate.
+
   let backpressured = false;
   const unsubscribe = subscribeTail(
     { service: params.service, level: params.level, q: params.q, attrs: params.attrs },
