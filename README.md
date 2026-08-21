@@ -609,8 +609,6 @@ Documented honestly, including things that were tried and reverted:
   becomes visible (100% by the end of each stage's consistency window). Under
   high concurrency, a log can take more than one flush cycle to become queryable;
   immediate-read-after-write is not guaranteed, only eventual visibility.
-- **Retention granularity is monthly**, not exact-to-the-day (see
-  [Retention](#retention)).
 - **Testing and benchmarking environment.** Verification was performed using the
   provided benchmarking portal and the company-provided benchmark CLI run
   locally, alongside the load scripts in `scripts/` and manual `curl`/browser
